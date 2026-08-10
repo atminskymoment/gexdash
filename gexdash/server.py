@@ -544,11 +544,30 @@ async def api_meta():
 
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache, must-revalidate"}
+    )
+
+
+class _RevalidatingStatic(StaticFiles):
+    """Serve the dashboard assets with ``no-cache``.
+
+    Not a performance concession — a correctness one. The markup, CSS and JS
+    here change as a unit, and a browser holding one stale file renders the
+    other two wrong *without failing*: unstyled SVG falls back to black fill
+    and no stroke, so a missing rule looks exactly like a drawing bug and
+    gets debugged as one. ``no-cache`` still allows a conditional request, so
+    the cost is a 304 on a localhost single-user app.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
 
 if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/static", _RevalidatingStatic(directory=STATIC_DIR), name="static")
 
 
 def main() -> None:

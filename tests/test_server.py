@@ -513,3 +513,22 @@ def test_exposure_payload_flags_when_login_is_needed(client, monkeypatch, tmp_pa
 
 def test_mock_provider_reports_no_login_needed(client):
     assert client.get("/api/exposure?symbol=SPX").json()["auth"]["needs_login"] is False
+
+
+# ----------------------------------------------------------------------
+# Static asset caching
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", ["/", "/static/app.js", "/static/styles.css"])
+def test_front_end_assets_are_revalidated_not_cached(client, path):
+    """The markup, CSS and JS ship as a unit and must not skew in a cache.
+
+    A browser holding a stale stylesheet renders the new markup *without
+    failing*: unstyled SVG falls back to black fill and no stroke, so a
+    missing rule looks exactly like a drawing bug. This cost real debugging
+    time once -- the crosshair appeared as a black box with no lines.
+    """
+    response = client.get(path)
+    assert response.status_code == 200
+    assert "no-cache" in response.headers.get("cache-control", "")

@@ -38,7 +38,10 @@ const state = {
   interval: "1m",
   // Visible window as fractional indices into the bar array. null = fit all.
   zoom: null,
-  indicators: { rsi: true, macd: true, adx: false },
+  indicators: { rsi: true, macd: true, adx: true },
+  // Last pointer position over the price chart, so the crosshair survives a
+  // re-render. null when the pointer is away.
+  xhair: null,
 };
 
 /* ----------------------------------------------------------- formatting */
@@ -422,14 +425,43 @@ function renderPriceChart() {
   yLo -= pad; yHi += pad;
 
   const y = (p) => padT + innerH - ((p - yLo) / (yHi - yLo)) * innerH;
-  const bw = innerW / n;
+  // Reserve empty slots past the last candle. The current bar is the one you
+  // look at most, and pinning it to the axis leaves nowhere for its tag and
+  // no room to read where price is heading.
+  const bw = innerW / (n + RIGHT_PAD_BARS);
   const body = Math.max(1, Math.min(bw * 0.62, 9));
   const x = (i) => padL + i * bw + bw / 2;
 
   const parts = [];
 
-  const occupied = levels.filter((l) => !l.offscale).map((l) => y(l.price));
-  occupied.push(y(vClose[n - 1]));
+  // VWAP is a level like any other for labelling purposes, so it has to join
+  // the list *before* the tags are laid out -- adding it later meant its tag
+  // was placed against no one and sat on whatever was already there.
+  if (showVwap && vVwap) {
+    levels.push({ label: "VWAP", colour: "var(--series-violet)", price: vVwap[n - 1] });
+  }
+
+  // Lay the right-hand tags out first, then suppress axis labels against
+  // where the tags actually ended up. Using each level's natural price
+  // instead lets a displaced tag land straight on an axis label.
+  const TAG_H = 11;
+  const lastY = y(vClose[n - 1]);
+  let sweepY = -Infinity;
+  const tags = levels.filter((l) => !l.offscale)
+    .map((l) => ({ ...l, y: y(l.price) }))
+    .sort((a, b) => a.y - b.y)
+    .map((t) => {
+      let ty = Math.max(t.y - 3, sweepY + TAG_H);
+      // The last-price tag is pinned to the price and drawn separately, so it
+      // takes no part in this sweep -- step over its band rather than letting
+      // a tag land on top of it and make both unreadable.
+      if (ty > lastY - TAG_H && ty < lastY + TAG_H) ty = lastY + TAG_H;
+      sweepY = ty;
+      return { ...t, ty };
+    });
+
+  const occupied = tags.map((t) => t.ty - 3);
+  occupied.push(lastY);
   for (let g = 0; g <= 5; g++) {
     const p = yLo + ((yHi - yLo) * g) / 5, gy = y(p);
     parts.push(`<line class="grid-line" x1="${padL}" x2="${padL + innerW}" y1="${gy}" y2="${gy}"/>`);
@@ -449,22 +481,15 @@ function renderPriceChart() {
 
   if (showVwap && vVwap) {
     parts.push(`<polyline class="vwap-line" points="${vVwap.map((v, i) => `${x(i)},${y(v)}`).join(" ")}"/>`);
-    levels.push({ label: "VWAP", colour: "var(--series-violet)", price: vVwap[n - 1] });
   }
 
-  // In-range levels: line plus a collision-laid-out tag.
-  const TAG_H = 11;
-  let lastTagY = -Infinity;
-  levels.filter((l) => !l.offscale).map((l) => ({ ...l, y: y(l.price) }))
-    .sort((a, b) => a.y - b.y)
-    .forEach((t) => {
-      if (t.label !== "VWAP") {
-        parts.push(`<line class="level-line${t.dashed ? " flip" : ""}" stroke="${t.colour}" x1="${padL}" x2="${padL + innerW}" y1="${t.y}" y2="${t.y}"/>`);
-      }
-      const ty = Math.max(t.y - 3, lastTagY + TAG_H);
-      lastTagY = ty;
-      parts.push(`<text class="level-tag" fill="${t.colour}" x="${padL + innerW + 5}" y="${ty}">${t.label} ${priceFmt(t.price)}</text>`);
-    });
+  // In-range levels: the line at the true price, the tag at its laid-out slot.
+  tags.forEach((t) => {
+    if (t.label !== "VWAP") {
+      parts.push(`<line class="level-line${t.dashed ? " flip" : ""}" stroke="${t.colour}" x1="${padL}" x2="${padL + innerW}" y1="${t.y}" y2="${t.y}"/>`);
+    }
+    parts.push(`<text class="level-tag" fill="${t.colour}" x="${padL + innerW + 5}" y="${t.ty}">${t.label} ${priceFmt(t.price)}</text>`);
+  });
 
   // Off-scale levels pinned to the edge with a direction arrow. "Indicate
   // the walls" has to hold even when a wall is far from the last price.
@@ -475,7 +500,6 @@ function renderPriceChart() {
     parts.push(`<text class="level-edge" fill="${l.colour}" x="${padL + 4}" y="${ty}">${up ? "▲" : "▼"} ${l.label} ${priceFmt(l.price)}</text>`);
   });
 
-  const lastY = y(vClose[n - 1]);
   parts.push(`<g class="last-tag"><rect x="${padL + innerW + 1}" y="${lastY - 7}" width="60" height="14" rx="3"/>
     <text x="${padL + innerW + 5}" y="${lastY + 3.5}">${vClose[n - 1].toFixed(2)}</text></g>`);
 
@@ -510,7 +534,14 @@ function renderPriceChart() {
     `O ${vOpen[i].toFixed(2)}  H ${vHigh[i].toFixed(2)}  L ${vLow[i].toFixed(2)}  C ${vClose[i].toFixed(2)}` +
     `   ${n} of ${total} bars` + (bars.synthetic ? "   · synthetic" : "");
 
-  renderIndicatorPanes(lo, hi, W, padL, padR, innerW);
+  renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw);
+
+  // Every refresh rebuilds this SVG from scratch, which would drop the
+  // crosshair until the pointer happened to move again -- so while streaming
+  // it would blink out every few seconds under a stationary cursor. Redraw it
+  // at the remembered position. Must follow renderIndicatorPanes, which
+  // rebuilds the pane overlays this reaches into.
+  if (state.xhair) drawCrosshair(svg, state.xhair.x, state.xhair.y);
 }
 
 /* ------------------------------- crosshair ------------------------------ */
@@ -535,56 +566,70 @@ function barAtClientX(svg, clientX) {
 }
 
 function attachCrosshair(svg) {
-  const move = (ev) => {
-    if (!$("chk-cross").checked) return hideCrosshair();
-    const c = state.chart;
-    const i = barAtClientX(svg, ev.clientX);
-    if (i === null) return hideCrosshair();
+  svg.addEventListener("pointermove", (ev) => {
+    // Remembered so a re-render can restore it -- see drawCrosshair's caller.
+    state.xhair = { x: ev.clientX, y: ev.clientY };
+    drawCrosshair(svg, ev.clientX, ev.clientY);
+  });
+  svg.addEventListener("pointerleave", () => {
+    // A re-render replaces this SVG while it is under the cursor, and Chrome
+    // fires a leave on the now-detached node. That is not the pointer going
+    // away, and honouring it would wipe the crosshair the new render just
+    // restored -- hideCrosshair is document-wide, so the stale node's event
+    // clears its replacement.
+    if (!svg.isConnected) return;
+    state.xhair = null;
+    hideCrosshair();
+  });
+}
 
-    const r = svg.getBoundingClientRect();
-    const py = ((ev.clientY - r.top) / r.height) * c.H;
-    const cy = Math.min(Math.max(py, c.padT), c.padT + c.innerH);
-    const cx = c.padL + i * c.bw + c.bw / 2;
-    const price = c.yHi - ((cy - c.padT) / c.innerH) * (c.yHi - c.yLo);
+/** Position the crosshair at a client point. Safe to call outside an event. */
+function drawCrosshair(svg, clientX, clientY) {
+  if (!$("chk-cross").checked) return hideCrosshair();
+  const c = state.chart;
+  const i = barAtClientX(svg, clientX);
+  if (i === null) return hideCrosshair();
 
-    const g = svg.querySelector("[data-xhair]");
-    g.style.display = "";
-    g.querySelector("[data-xv]").setAttribute("x1", cx);
-    g.querySelector("[data-xv]").setAttribute("x2", cx);
-    g.querySelector("[data-xh]").setAttribute("y1", cy);
-    g.querySelector("[data-xh]").setAttribute("y2", cy);
+  const r = svg.getBoundingClientRect();
+  const py = ((clientY - r.top) / r.height) * c.H;
+  const cy = Math.min(Math.max(py, c.padT), c.padT + c.innerH);
+  const cx = c.padL + i * c.bw + c.bw / 2;
+  const price = c.yHi - ((cy - c.padT) / c.innerH) * (c.yHi - c.yLo);
 
-    const pg = g.querySelector("[data-xprice]");
-    pg.querySelector("rect").setAttribute("x", c.padL + c.innerW + 1);
-    pg.querySelector("rect").setAttribute("y", cy - 7);
-    const pt = pg.querySelector("text");
-    pt.setAttribute("x", c.padL + c.innerW + 5);
-    pt.setAttribute("y", cy + 3.5);
-    pt.textContent = price.toFixed(2);
+  const g = svg.querySelector("[data-xhair]");
+  g.style.display = "";
+  g.querySelector("[data-xv]").setAttribute("x1", cx);
+  g.querySelector("[data-xv]").setAttribute("x2", cx);
+  g.querySelector("[data-xh]").setAttribute("y1", cy);
+  g.querySelector("[data-xh]").setAttribute("y2", cy);
 
-    const tg = g.querySelector("[data-xtime]");
-    const stamp = String(c.time[i]);
-    const label = c.daily ? stamp.slice(0, 10) : stamp.slice(11, 16);
-    const tw = label.length * 6 + 8;
-    tg.querySelector("rect").setAttribute("x", Math.min(Math.max(cx - tw / 2, c.padL), c.padL + c.innerW - tw));
-    tg.querySelector("rect").setAttribute("y", c.padT + c.innerH + 2);
-    tg.querySelector("rect").setAttribute("width", tw);
-    const tt = tg.querySelector("text");
-    tt.setAttribute("x", Math.min(Math.max(cx, c.padL + tw / 2), c.padL + c.innerW - tw / 2));
-    tt.setAttribute("y", c.padT + c.innerH + 11.5);
-    tt.setAttribute("text-anchor", "middle");
-    tt.textContent = label;
+  const pg = g.querySelector("[data-xprice]");
+  pg.querySelector("rect").setAttribute("x", c.padL + c.innerW + 1);
+  pg.querySelector("rect").setAttribute("y", cy - 7);
+  const pt = pg.querySelector("text");
+  pt.setAttribute("x", c.padL + c.innerW + 5);
+  pt.setAttribute("y", cy + 3.5);
+  pt.textContent = price.toFixed(2);
 
-    syncIndicatorCrosshair(cx);
+  const tg = g.querySelector("[data-xtime]");
+  const stamp = String(c.time[i]);
+  const label = c.daily ? stamp.slice(0, 10) : stamp.slice(11, 16);
+  const tw = label.length * 6 + 8;
+  tg.querySelector("rect").setAttribute("x", Math.min(Math.max(cx - tw / 2, c.padL), c.padL + c.innerW - tw));
+  tg.querySelector("rect").setAttribute("y", c.padT + c.innerH + 2);
+  tg.querySelector("rect").setAttribute("width", tw);
+  const tt = tg.querySelector("text");
+  tt.setAttribute("x", Math.min(Math.max(cx, c.padL + tw / 2), c.padL + c.innerW - tw / 2));
+  tt.setAttribute("y", c.padT + c.innerH + 11.5);
+  tt.setAttribute("text-anchor", "middle");
+  tt.textContent = label;
 
-    // Read out the hovered bar, not just the last one.
-    $("price-ohlc").textContent =
-      `O ${c.open[i].toFixed(2)}  H ${c.high[i].toFixed(2)}  L ${c.low[i].toFixed(2)}  C ${c.close[i].toFixed(2)}` +
-      `   ${label}`;
-  };
+  syncIndicatorCrosshair(cx);
 
-  svg.addEventListener("pointermove", move);
-  svg.addEventListener("pointerleave", hideCrosshair);
+  // Read out the hovered bar, not just the last one.
+  $("price-ohlc").textContent =
+    `O ${c.open[i].toFixed(2)}  H ${c.high[i].toFixed(2)}  L ${c.low[i].toFixed(2)}  C ${c.close[i].toFixed(2)}` +
+    `   ${label}`;
 }
 
 function hideCrosshair() {
@@ -670,6 +715,9 @@ function zoomBy(factor) {
 /* --------------------------- indicator panes ---------------------------- */
 
 // Heights are +30% on the originals (62/68/62).
+/** Empty bar slots kept to the right of the last candle, price and panes alike. */
+const RIGHT_PAD_BARS = 10;
+
 const IND_SPECS = [
   { key: "rsi", title: "RSI (14) + MA(20)", height: 81,
     series: [["rsi", "var(--series-violet)"], ["rsi_ma", "var(--series-gold)"]],
@@ -682,13 +730,15 @@ const IND_SPECS = [
     domain: [0, 100], guides: [25] },
 ];
 
-function renderIndicatorPanes(lo, hi, W, padL, padR, innerW) {
+function renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw) {
   const host = $("indicator-panes");
   const ind = state.bars?.indicators;
   if (!ind) { host.innerHTML = ""; return; }
 
   const n = hi - lo;
-  const x = (i) => padL + i * (innerW / n) + (innerW / n) / 2;
+  // Slot width comes from the price chart rather than being recomputed here:
+  // the two must agree exactly or the shared crosshair drifts between panes.
+  const x = (i) => padL + i * bw + bw / 2;
   const blocks = [];
 
   IND_SPECS.filter((spec) => state.indicators[spec.key]).forEach((spec) => {
@@ -714,12 +764,12 @@ function renderIndicatorPanes(lo, hi, W, padL, padR, innerW) {
     if (spec.zero) parts.push(`<line class="zero-line" x1="${padL}" x2="${padL + innerW}" y1="${y(0)}" y2="${y(0)}"/>`);
 
     if (hist) {
-      const bw = Math.max(1, innerW / n - 1);
+      const barW = Math.max(1, bw - 1);
       hist.forEach((v, i) => {
         if (v === null) return;
         const y0 = y(0), yv = y(v);
-        parts.push(`<rect class="bar" fill="${v >= 0 ? "var(--pos)" : "var(--neg)"}" x="${x(i) - bw / 2}"
-          y="${Math.min(y0, yv)}" width="${bw}" height="${Math.max(Math.abs(yv - y0), 0.6)}"/>`);
+        parts.push(`<rect class="bar" fill="${v >= 0 ? "var(--pos)" : "var(--neg)"}" x="${x(i) - barW / 2}"
+          y="${Math.min(y0, yv)}" width="${barW}" height="${Math.max(Math.abs(yv - y0), 0.6)}"/>`);
       });
     }
 

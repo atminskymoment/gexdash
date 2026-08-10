@@ -290,6 +290,28 @@ function renderStrip(d) {
   $("strip-oi").innerHTML =
     `OI as of <b>${d.diagnostics.oi_asof || "unknown"}</b> — OCC publishes once daily; re-priced against live spot` +
     (d.stale ? ' · <span style="color:var(--critical)">STALE CHAIN</span>' : "");
+  renderDegraded(d);
+}
+
+/**
+ * Persistent banner for a degraded chain.
+ *
+ * Separate from `notice()`, which is for transient events: this describes the
+ * state of what is currently on screen and must stay up for as long as that
+ * is true, rather than being dismissed or scrolled past.
+ */
+function renderDegraded(d) {
+  const box = $("degraded");
+  if (!d.degraded_reason) { box.hidden = true; box.textContent = ""; return; }
+
+  const age = d.cache_age_hours;
+  const showing = d.oi_unavailable
+    ? "No earlier snapshot is available, so there is nothing to fall back to and the exposure measures are shown as unavailable."
+    : `Showing the last chain that had one${age == null ? "" : `, fetched ${age}h ago`}. Levels and exposure are from that snapshot, re-priced against live spot.`;
+
+  box.innerHTML =
+    `<strong>Degraded:</strong> ${esc(d.degraded_reason)}. ${esc(showing)}`;
+  box.hidden = false;
 }
 
 /* ═══════════════════════════ TERMINAL VIEW ═══════════════════════════ */
@@ -304,8 +326,17 @@ const KPIS = [
 function renderTerminal(d) {
   // KPI strip
   const flip = d.levels.gamma_flip?.strike;
+  // Every one of these is proportional to open interest, so with no OI they
+  // are all exactly zero. Rendering "$0" would state a fact about the market;
+  // the truth is that the measure could not be computed.
+  const noOI = !!d.oi_unavailable;
   const tiles = KPIS.map(([k, label, sub]) => {
     const v = d.totals[k];
+    if (noOI) {
+      return `<div class="kpi"><div class="k">${label}</div>
+        <div class="v muted">n/a</div>
+        <div class="sub">no open interest in the chain</div></div>`;
+    }
     return `<div class="kpi"><div class="k">${label}</div>
       <div class="v ${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${money(v)}</div>
       <div class="sub">${sub}</div></div>`;
@@ -313,7 +344,11 @@ function renderTerminal(d) {
   tiles.push(`<div class="kpi"><div class="k">Gamma flip</div>
     <div class="v">${flip === null || flip === undefined ? "—" : priceFmt(flip)}</div>
     <div class="sub">zero-γ strike${flip === null ? " — none in range" : ""}</div></div>`);
-  tiles.push(`<div class="kpi"><div class="k">Open interest</div>
+  tiles.push(noOI
+    ? `<div class="kpi"><div class="k">Open interest</div>
+       <div class="v muted">n/a</div>
+       <div class="sub">none reported — "0c · 0p" would be a claim, not a reading</div></div>`
+    : `<div class="kpi"><div class="k">Open interest</div>
     <div class="v ${d.totals.pc_oi_ratio > 1 ? "neg" : "pos"}">P/C ${px(d.totals.pc_oi_ratio, 2)}</div>
     <div class="sub">${count(d.totals.call_oi)}c · ${count(d.totals.put_oi)}p</div></div>`);
   $("kpi-row").innerHTML = tiles.join("");

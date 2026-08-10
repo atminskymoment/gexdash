@@ -583,3 +583,8 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
   width: 8px; height: 8px; border-radius: 2px; display: inline-block;
   margin-right: 4px; vertical-align: baseline;
 }
+
+/* Degraded-chain banner. Lives outside #notices because it describes the
+   state of what is on screen, not an event that happened. */
+#degraded { margin: var(--gap) var(--gap) 0; }
+#degraded[hidden] { display: none; }

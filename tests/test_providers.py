@@ -12,7 +12,7 @@ from gexdash.exposure import ExposureConfig
 from gexdash.providers.mock import MockProvider
 from gexdash.providers.schwab import SchwabProvider, _clean
 from gexdash.sessions import exchange_today, previous_session
-from gexdash.store import CachedProvider, ChainStore
+from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
 
 
 # ----------------------------------------------------------------------
@@ -250,3 +250,155 @@ def test_chain_responses_merge_without_losing_strikes():
     # A boundary landing mid-expiry must union the strikes, not replace them.
     assert set(merged["callExpDateMap"]["2026-08-14:4"]) == {"7700.0", "7750.0"}
     assert merged["underlyingPrice"] == 7753.11, "must keep the slice that had a price"
+
+
+# ----------------------------------------------------------------------
+# Zero open interest — a failed fetch that looks like a successful one
+# ----------------------------------------------------------------------
+
+
+class _ZeroOIProvider(MockProvider):
+    """A provider whose chain arrives with every openInterest at zero.
+
+    Observed live: Schwab served 2,338 SPX contracts with openInterest 0 on
+    every one, volume populated, no error. Every exposure measure is
+    proportional to OI, so the surface collapses to $0 -- which renders as a
+    confident zero rather than as missing data.
+    """
+
+    name = "zero-oi"
+
+    def get_chain(self, inst, *, max_dte=None):
+        chain = super().get_chain(inst, max_dte=max_dte)
+        chain.open_interest[:] = 0.0
+        return chain
+
+
+def test_zero_oi_chain_never_overwrites_a_good_snapshot(tmp_path):
+    store = ChainStore(tmp_path / "z.db")
+    good = CachedProvider(MockProvider(), store)
+    baseline = good.get_chain(instruments.SPX, max_dte=30)
+    assert baseline.open_interest.sum() > 0
+
+    degraded = CachedProvider(_ZeroOIProvider(), store)
+    chain = degraded.get_chain(instruments.SPX, max_dte=30, force=True)
+
+    assert chain.open_interest.sum() > 0, "must keep serving the last good chain"
+    assert chain.meta["stale"] is True
+    assert chain.meta["degraded_reason"] == OI_ZERO_REASON
+
+    # And the zeroed chain must not have displaced the good one on disk.
+    assert store.load(instruments.SPX).open_interest.sum() > 0
+
+
+def test_zero_oi_chain_is_flagged_when_there_is_nothing_to_fall_back_to(tmp_path):
+    provider = CachedProvider(_ZeroOIProvider(), ChainStore(tmp_path / "z2.db"))
+    chain = provider.get_chain(instruments.SPX, max_dte=30)
+
+    assert chain.meta["oi_unavailable"] is True
+    assert chain.meta["stale"] is True
+    assert chain.meta["degraded_reason"] == OI_ZERO_REASON
+
+
+def test_a_zero_oi_chain_is_never_cached(tmp_path):
+    """Otherwise the next request serves it from disk as if it were good."""
+    store = ChainStore(tmp_path / "z3.db")
+    CachedProvider(_ZeroOIProvider(), store).get_chain(instruments.SPX, max_dte=30)
+    assert store.load(instruments.SPX) is None
+
+
+def test_a_thin_but_real_chain_is_not_mistaken_for_a_failed_fetch(tmp_path):
+    """A thin chain is one where few contracts are *listed*, not one where
+    thousands are listed and two are held.
+
+    Measured healthy coverage on a live entitlement was 34-73% of contracts;
+    the degraded chain was 0.01%. This keeps a 10% chain valid.
+    """
+    class _Thin(MockProvider):
+        def get_chain(self, inst, *, max_dte=None):
+            chain = super().get_chain(inst, max_dte=max_dte)
+            chain.open_interest[:] = 0.0
+            chain.open_interest[::10] = 1.0          # 10% coverage
+            return chain
+
+    chain = CachedProvider(_Thin(), ChainStore(tmp_path / "z4.db")).get_chain(instruments.SPX, max_dte=30)
+    assert chain.meta.get("oi_unavailable") is not True
+    assert chain.meta["stale"] is False
+
+
+def test_a_handful_of_positions_in_a_huge_chain_is_a_failed_fetch(tmp_path):
+    """The case actually observed: 2 of 16,862 SPX contracts carried OI, 896
+    contracts in total, and none at all inside the analysed expiry window."""
+    class _TwoPositions(MockProvider):
+        def get_chain(self, inst, *, max_dte=None):
+            chain = super().get_chain(inst, max_dte=max_dte)
+            chain.open_interest[:] = 0.0
+            chain.open_interest[0] = 512.0
+            chain.open_interest[1] = 384.0
+            return chain
+
+    chain = CachedProvider(_TwoPositions(), ChainStore(tmp_path / "z5.db")).get_chain(instruments.SPX, max_dte=30)
+    assert chain.meta["oi_unavailable"] is True
+
+
+def test_a_poisoned_snapshot_does_not_shadow_the_good_one_behind_it(tmp_path):
+    """The zero-OI check postdates the rows already on disk.
+
+    load() returns the newest snapshot_day, so a zeroed row written before
+    the check existed would be served as good until it aged out -- and would
+    also hide the previous day's usable chain.
+    """
+    from datetime import date, timedelta
+
+    store = ChainStore(tmp_path / "p.db")
+    good = MockProvider().get_chain(instruments.SPX, max_dte=30)
+    store.save(good, provider="mock", day=date(2026, 8, 7))
+
+    zeroed = MockProvider().get_chain(instruments.SPX, max_dte=30)
+    zeroed.open_interest[:] = 0.0
+    store.save(zeroed, provider="mock", day=date(2026, 8, 10))
+
+    assert store.load(instruments.SPX).open_interest.sum() == 0, "newest row is the bad one"
+    assert store.load_usable(instruments.SPX).open_interest.sum() > 0
+
+    # And the provider serves the good one rather than the zeroed newest.
+    chain = CachedProvider(_ZeroOIProvider(), store).get_chain(instruments.SPX, max_dte=30)
+    assert chain.open_interest.sum() > 0
+    assert chain.meta["stale"] is True
+
+
+def test_a_degraded_chain_is_not_refetched_on_every_request(tmp_path):
+    """It is never written to the store, so without a back-off each request
+    would re-pull it. For SPX that is four paginated calls and ~17k
+    contracts, repeated on every dashboard poll.
+    """
+    class _Counting(_ZeroOIProvider):
+        calls = 0
+
+        def get_chain(self, inst, *, max_dte=None):
+            _Counting.calls += 1
+            return super().get_chain(inst, max_dte=max_dte)
+
+    provider = CachedProvider(_Counting(), ChainStore(tmp_path / "b.db"))
+    for _ in range(5):
+        chain = provider.get_chain(instruments.SPX, max_dte=30)
+        assert chain.meta["oi_unavailable"] is True
+
+    assert _Counting.calls == 1, "the refusal must be remembered, not re-discovered"
+
+    # The refetch button must still reach the provider.
+    provider.get_chain(instruments.SPX, max_dte=30, force=True)
+    assert _Counting.calls == 2
+
+
+def test_the_backoff_clears_once_a_good_chain_arrives(tmp_path):
+    store = ChainStore(tmp_path / "r.db")
+    provider = CachedProvider(_ZeroOIProvider(), store)
+    provider.get_chain(instruments.SPX, max_dte=30)
+    assert provider._degraded
+
+    provider.provider = MockProvider()
+    chain = provider.get_chain(instruments.SPX, max_dte=30, force=True)
+    assert chain.meta["stale"] is False
+    assert not provider._degraded, "a recovered feed must not stay backed off"
+    assert store.load(instruments.SPX) is not None, "and the good chain is cached again"

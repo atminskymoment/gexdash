@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -94,6 +95,26 @@ class ChainStore:
             ),
         )
         self._conn.commit()
+
+    def load_usable(self, instrument: Instrument | str, *, max_lookback: int = 10) -> OptionChain | None:
+        """The most recent snapshot that actually carries open interest.
+
+        ``load`` returns the newest row, which is wrong as a fallback: a
+        zero-OI snapshot saved before that condition was detected shadows the
+        good one behind it, and would be served indefinitely as if it were
+        fine. Walks back day by day instead.
+        """
+        key = instrument if isinstance(instrument, str) else instrument.key
+        days = self._conn.execute(
+            "SELECT snapshot_day FROM chain_snapshot WHERE instrument = ? "
+            "ORDER BY snapshot_day DESC LIMIT ?",
+            (key, max_lookback),
+        ).fetchall()
+        for (day_str,) in days:
+            chain = self.load(key, date.fromisoformat(day_str))
+            if chain is not None and _has_open_interest(chain):
+                return chain
+        return None
 
     def load(self, instrument: Instrument | str, day: date | None = None) -> OptionChain | None:
         key = instrument if isinstance(instrument, str) else instrument.key
@@ -182,17 +203,70 @@ class ChainStore:
         return [date.fromisoformat(r[0]) for r in rows]
 
 
+#: Shown verbatim in the UI, so it says what happened and what is on screen.
+OI_ZERO_REASON = (
+    "the provider returned a chain with essentially no open interest - every "
+    "exposure measure is proportional to OI, so this is a failed fetch, not a "
+    "flat market"
+)
+
+#: Minimum share of contracts that must carry open interest for a chain to be
+#: believable.
+#:
+#: Chosen from measurement, not taste. Sampled against one Schwab entitlement
+#: with three healthy chains and one degraded one:
+#:
+#:     SPY  72.7% of contracts carry OI     QQQ  68.3%
+#:     NDX  34.3%                           SPX   0.01%  <- degraded
+#:
+#: The degraded SPX chain had 2 of 16,862 contracts with any OI at all, 896
+#: contracts' worth in total, and *none* inside the <=30 DTE window the
+#: dashboard analyses. 1% sits ~34x below the thinnest healthy reading, so it
+#: separates the two cases with a wide margin while leaving a genuinely thin
+#: chain -- few contracts listed, most of them held -- comfortably valid.
+MIN_OI_COVERAGE = 0.01
+
+
+def _has_open_interest(chain: OptionChain) -> bool:
+    """Does this chain carry a usable OI surface?
+
+    A share rather than a raw total: "any OI at all" is too permissive, as the
+    degraded SPX chain above proves, and an absolute floor would have to be
+    set per instrument (SPY carries millions, a quiet single-name does not).
+    """
+    oi = np.nan_to_num(chain.open_interest)
+    if oi.size == 0:
+        return False
+    return float((oi > 0).sum()) / oi.size >= MIN_OI_COVERAGE
+
+
 class CachedProvider:
     """Wraps a provider so the chain is fetched at most once per day.
 
     Spot is *not* cached -- that is the live half of tier A.
     """
 
-    def __init__(self, provider, store: ChainStore | None = None, max_age_hours: float = 12.0) -> None:
+    def __init__(
+        self,
+        provider,
+        store: ChainStore | None = None,
+        max_age_hours: float = 12.0,
+        degraded_retry_seconds: float = 300.0,
+    ) -> None:
         self.provider = provider
         self.store = store or ChainStore()
         self.max_age_hours = max_age_hours
+        self.degraded_retry_seconds = degraded_retry_seconds
         self.name = getattr(provider, "name", "unknown")
+        #: instrument key -> (retry_after_monotonic, the degraded chain).
+        #:
+        #: A chain with no open interest is deliberately never written to the
+        #: store, which without this would mean re-fetching it on *every*
+        #: request -- for SPX that is four paginated calls and ~17k contracts,
+        #: repeated on each dashboard poll. Remember the refusal in memory
+        #: instead and back off. ``force`` still overrides it, so the refetch
+        #: button always reaches the provider.
+        self._degraded: dict[str, tuple[float, OptionChain]] = {}
 
     def get_spot(self, instrument: Instrument) -> float:
         return self.provider.get_spot(instrument)
@@ -204,14 +278,49 @@ class CachedProvider:
             asof = asof.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - asof).total_seconds() / 3600
 
+    def _last_good(self, cached: OptionChain | None, instrument: Instrument) -> OptionChain | None:
+        """The best snapshot to fall back on when a fetch is unusable.
+
+        Reads through to the store even when ``force`` skipped the cache.
+        Forcing means "do not trust the freshness window" -- it does not mean
+        "throw away a good snapshot if the refetch turns out to be unusable",
+        which is what the ↻ refetch button would otherwise do.
+        """
+        if cached is not None:
+            return cached
+        try:
+            return self.store.load_usable(instrument)
+        except Exception:
+            return None
+
+    def _as_degraded(self, chain: OptionChain, reason: str) -> OptionChain:
+        chain.meta.update(
+            from_cache=True, stale=True,
+            cache_age_hours=round(self._age_hours(chain), 2),
+            degraded_reason=reason,
+        )
+        return chain
+
     def get_chain(self, instrument: Instrument, *, max_dte: float | None = None, force: bool = False) -> OptionChain:
         cached = None if force else self.store.load(instrument)
+        # A snapshot saved before this condition was detected can itself be
+        # all zeros. Treat it as no cache at all, or it is served as good
+        # until it ages out.
+        if cached is not None and not _has_open_interest(cached):
+            cached = None
 
         if cached is not None:
             age_h = self._age_hours(cached)
             if age_h <= self.max_age_hours:
                 cached.meta.update(from_cache=True, stale=False, cache_age_hours=round(age_h, 2))
                 return cached
+
+        # Still inside the back-off from a chain that arrived without open
+        # interest: do not ask again yet.
+        held = self._degraded.get(instrument.key)
+        if held is not None and not force and time.monotonic() < held[0]:
+            fallback = self._last_good(None, instrument)
+            return self._as_degraded(fallback, OI_ZERO_REASON) if fallback is not None else held[1]
 
         try:
             chain = self.provider.get_chain(instrument, max_dte=max_dte)
@@ -220,13 +329,35 @@ class CachedProvider:
             # chain that is a few hours past its refresh window is still a
             # usable OI surface; a 502 is not. The staleness is flagged so
             # the UI's provenance panel can say so rather than imply freshness.
-            if cached is None:
+            fallback = self._last_good(cached, instrument)
+            if fallback is None:
                 raise
-            cached.meta.update(
-                from_cache=True, stale=True, cache_age_hours=round(self._age_hours(cached), 2)
+            return self._as_degraded(
+                fallback, f"the {self.name} provider could not be reached"
             )
-            return cached
 
+        # A chain whose open interest is entirely zero is a failed fetch that
+        # arrives looking like a successful one. Every exposure measure is
+        # proportional to OI, so the whole surface collapses to $0 -- which
+        # renders as a confident zero, not as missing data. Observed live:
+        # Schwab served 2,338 SPX contracts with openInterest 0 on every one
+        # while volume was populated.
+        if not _has_open_interest(chain):
+            # Never let this overwrite a good snapshot: keep serving the last
+            # one that had a real OI surface.
+            chain.meta.update(from_cache=False, stale=True, oi_unavailable=True,
+                              degraded_reason=OI_ZERO_REASON)
+            self._degraded[instrument.key] = (
+                time.monotonic() + self.degraded_retry_seconds, chain,
+            )
+            fallback = self._last_good(cached, instrument)
+            if fallback is not None:
+                return self._as_degraded(fallback, OI_ZERO_REASON)
+            # Nothing better to serve. Return it, but never cache it to disk,
+            # so the UI reports the exposure as unavailable rather than nil.
+            return chain
+
+        self._degraded.pop(instrument.key, None)
         self.store.save(chain, provider=self.name)
         chain.meta.update(from_cache=False, stale=False)
         return chain

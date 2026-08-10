@@ -120,6 +120,11 @@ def _build_payload(inst, cfg: ExposureConfig, *, live_spot: bool = True) -> dict
     payload["from_cache"] = bool(chain.meta.get("from_cache"))
     payload["stale"] = bool(chain.meta.get("stale"))
     payload["cache_age_hours"] = chain.meta.get("cache_age_hours")
+    # Why the data is degraded, when it is. Distinct from `stale`: a chain can
+    # be stale because a refresh failed, or because the refresh succeeded and
+    # returned a chain with no open interest in it.
+    payload["degraded_reason"] = chain.meta.get("degraded_reason")
+    payload["oi_unavailable"] = bool(chain.meta.get("oi_unavailable"))
     payload["server_time"] = datetime.now(timezone.utc).isoformat()
     # Tiles the reference dashboard shows that tier A cannot compute. Sent
     # explicitly so the UI renders them as unavailable rather than blank --

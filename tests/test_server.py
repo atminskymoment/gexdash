@@ -18,7 +18,7 @@ from gexdash import instruments
 from gexdash.providers.base import ProviderError
 from gexdash.providers.mock import MockProvider
 from gexdash.server import app, set_provider
-from gexdash.store import CachedProvider, ChainStore
+from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
 
 
 @pytest.fixture(autouse=True)
@@ -387,7 +387,7 @@ def test_connect_page_is_served(client):
 def test_auth_status_never_leaks_a_secret(client, monkeypatch, tmp_path):
     """The page renders this verbatim, so it must be safe to display."""
     from gexdash.providers.schwab import SchwabAuth, SchwabProvider
-    from gexdash.store import CachedProvider, ChainStore
+    from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
 
     monkeypatch.setenv("SCHWAB_APP_KEY", "TOPSECRETKEY123")
     monkeypatch.setenv("SCHWAB_APP_SECRET", "TOPSECRETSECRET")
@@ -419,7 +419,7 @@ def test_auth_status_without_credentials(client):
 
 def test_exchange_rejects_a_value_with_no_code(client, monkeypatch, tmp_path):
     from gexdash.providers.schwab import SchwabAuth, SchwabProvider
-    from gexdash.store import CachedProvider, ChainStore
+    from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
 
     monkeypatch.setenv("SCHWAB_APP_KEY", "k")
     monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
@@ -436,7 +436,7 @@ def test_exchange_tries_every_redirect_form_then_reports(client, monkeypatch, tm
     rather than a bare 'invalid_grant'."""
     from gexdash.providers import schwab
     from gexdash.providers.base import ProviderError
-    from gexdash.store import CachedProvider, ChainStore
+    from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
 
     monkeypatch.setenv("SCHWAB_APP_KEY", "k")
     monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
@@ -459,7 +459,7 @@ def test_exchange_tries_every_redirect_form_then_reports(client, monkeypatch, tm
 def test_exchange_reports_which_redirect_form_worked(client, monkeypatch, tmp_path):
     from gexdash.providers import schwab
     from gexdash.providers.base import ProviderError
-    from gexdash.store import CachedProvider, ChainStore
+    from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
 
     monkeypatch.setenv("SCHWAB_APP_KEY", "k")
     monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
@@ -482,7 +482,7 @@ def test_exchange_reports_which_redirect_form_worked(client, monkeypatch, tmp_pa
 
 def test_logout_removes_the_token(client, monkeypatch, tmp_path):
     from gexdash.providers.schwab import SchwabAuth, SchwabProvider
-    from gexdash.store import CachedProvider, ChainStore
+    from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
 
     monkeypatch.setenv("SCHWAB_APP_KEY", "k")
     monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
@@ -499,7 +499,7 @@ def test_exposure_payload_flags_when_login_is_needed(client, monkeypatch, tmp_pa
     """The dashboard must say 'not connected' rather than quietly showing
     numbers from a provider that cannot answer."""
     from gexdash.providers.schwab import SchwabAuth, SchwabProvider
-    from gexdash.store import CachedProvider, ChainStore
+    from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
 
     monkeypatch.setenv("SCHWAB_APP_KEY", "k")
     monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
@@ -532,3 +532,29 @@ def test_front_end_assets_are_revalidated_not_cached(client, path):
     response = client.get(path)
     assert response.status_code == 200
     assert "no-cache" in response.headers.get("cache-control", "")
+
+
+def test_degraded_chain_is_reported_in_the_payload(client, tmp_path):
+    """A zero-OI chain must reach the client as unavailable, not as $0.
+
+    Every exposure measure is proportional to open interest, so the surface
+    collapses to zero -- and a zero renders as a confident statement about
+    the market rather than as a failed fetch.
+    """
+    from gexdash.providers.mock import MockProvider
+    from gexdash.store import OI_ZERO_REASON, CachedProvider, ChainStore
+
+    class _ZeroOI(MockProvider):
+        name = "zero-oi"
+
+        def get_chain(self, inst, *, max_dte=None):
+            chain = super().get_chain(inst, max_dte=max_dte)
+            chain.open_interest[:] = 0.0
+            return chain
+
+    set_provider(CachedProvider(_ZeroOI(), ChainStore(tmp_path / "zero.db")))
+    payload = client.get("/api/exposure?symbol=SPX").json()
+
+    assert payload["oi_unavailable"] is True
+    assert payload["degraded_reason"] == OI_ZERO_REASON
+    assert payload["totals"]["gex"] == 0.0, "the number really is zero -- the UI must not print it"

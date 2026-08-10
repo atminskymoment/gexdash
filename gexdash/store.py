@@ -251,22 +251,39 @@ class CachedProvider:
         provider,
         store: ChainStore | None = None,
         max_age_hours: float = 12.0,
-        degraded_retry_seconds: float = 300.0,
+        degraded_retry_seconds: float = 30.0,
+        degraded_retry_max_seconds: float = 480.0,
     ) -> None:
         self.provider = provider
         self.store = store or ChainStore()
         self.max_age_hours = max_age_hours
+        #: First retry delay after a chain arrives without open interest, and
+        #: the ceiling it doubles up to: 30s, 60s, 120s, 240s, 480s.
+        #:
+        #: Short at first because the common case is transient -- the feed
+        #: drops OI around the session boundary and comes back within a minute
+        #: or two, and a long first wait leaves the dashboard reading "n/a"
+        #: well after the data returned. Doubling stops a genuinely broken
+        #: feed from being re-pulled every 30s all night; for SPX one attempt
+        #: is four paginated calls and ~17k contracts.
         self.degraded_retry_seconds = degraded_retry_seconds
+        self.degraded_retry_max_seconds = degraded_retry_max_seconds
         self.name = getattr(provider, "name", "unknown")
-        #: instrument key -> (retry_after_monotonic, the degraded chain).
+        #: instrument key -> (retry_after_monotonic, chain, consecutive_failures)
         #:
         #: A chain with no open interest is deliberately never written to the
         #: store, which without this would mean re-fetching it on *every*
-        #: request -- for SPX that is four paginated calls and ~17k contracts,
-        #: repeated on each dashboard poll. Remember the refusal in memory
-        #: instead and back off. ``force`` still overrides it, so the refetch
-        #: button always reaches the provider.
-        self._degraded: dict[str, tuple[float, OptionChain]] = {}
+        #: request. Remember the refusal in memory instead and back off.
+        #: ``force`` still overrides it, so the refetch button always reaches
+        #: the provider.
+        self._degraded: dict[str, tuple[float, OptionChain, int]] = {}
+
+    def _backoff_seconds(self, failures: int) -> float:
+        """Delay before attempt ``failures + 1``. Doubles, then holds."""
+        return min(
+            self.degraded_retry_seconds * (2 ** max(failures - 1, 0)),
+            self.degraded_retry_max_seconds,
+        )
 
     def get_spot(self, instrument: Instrument) -> float:
         return self.provider.get_spot(instrument)
@@ -321,6 +338,7 @@ class CachedProvider:
         if held is not None and not force and time.monotonic() < held[0]:
             fallback = self._last_good(None, instrument)
             return self._as_degraded(fallback, OI_ZERO_REASON) if fallback is not None else held[1]
+        failures = held[2] if held is not None else 0
 
         try:
             chain = self.provider.get_chain(instrument, max_dte=max_dte)
@@ -347,8 +365,9 @@ class CachedProvider:
             # one that had a real OI surface.
             chain.meta.update(from_cache=False, stale=True, oi_unavailable=True,
                               degraded_reason=OI_ZERO_REASON)
+            failures += 1
             self._degraded[instrument.key] = (
-                time.monotonic() + self.degraded_retry_seconds, chain,
+                time.monotonic() + self._backoff_seconds(failures), chain, failures,
             )
             fallback = self._last_good(cached, instrument)
             if fallback is not None:

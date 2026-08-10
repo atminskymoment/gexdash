@@ -27,7 +27,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import exposure, instruments
+from . import exposure, instruments, interpretation
 from .exposure import EXPIRY_WINDOWS, ExposureConfig
 from .providers import build_provider
 from .sessions import market_phase
@@ -156,6 +156,9 @@ def _build_payload(inst, cfg: ExposureConfig, *, live_spot: bool = True) -> dict
         "strike_step": inst.strike_step,
         "note": inst.note,
     }
+    # Built last: it reads the assembled payload, so what is interpreted is
+    # exactly what the client is sent.
+    payload["interpretation"] = interpretation.build(payload)
     return payload
 
 

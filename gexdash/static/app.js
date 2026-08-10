@@ -293,6 +293,66 @@ function renderStrip(d) {
   renderDegraded(d);
 }
 
+/** How each reading's value is formatted. Keyed by the server's reading key. */
+const READING_FMT = {
+  gex: money, dex: money, vanx: money, cex: money,
+  gamma_flip: priceFmt, max_pain: priceFmt,
+  walls: (v) => `${priceFmt(v[0])} / ${priceFmt(v[1])}`,
+  pc_oi: (v) => px(v, 2),
+};
+
+/**
+ * The written reading of the exposure surface.
+ *
+ * Text and thresholds come from the server (gexdash/interpretation.py) so the
+ * wording is testable; this only lays it out. Nothing here composes a claim
+ * of its own -- a sentence invented in the browser is one nobody checks.
+ */
+function renderInterpretation(d) {
+  const box = $("reading");
+  const it = d.interpretation;
+  // Null when there is no open interest: the totals are all zero and any
+  // description of them would be fluent nonsense. The degraded banner has
+  // already said why.
+  if (!it) { box.hidden = true; return; }
+  box.hidden = false;
+
+  $("reading-label").textContent = it.headline;
+  $("reading-gloss").textContent = it.headline_gloss;
+
+  const shown = it.readings.map((r) => {
+    const fmt = READING_FMT[r.key];
+    const value = r.value === null || r.value === undefined
+      ? "—"
+      : (fmt ? fmt(r.value) : r.value);
+    // The arrow carries the sign so the number itself can stay in ink.
+    const glyph = r.tone === "pos" ? "▲" : r.tone === "neg" ? "▼" : "";
+    const sign = glyph ? `<span class="sign ${r.tone}">${glyph}</span>` : "";
+    return { r, value, sign };
+  });
+
+  // The numbers at a glance; the per-metric prose is one disclosure down, so
+  // the box stays a box rather than an essay.
+  $("reading-chips").innerHTML = shown.map(({ r, value, sign }) =>
+    `<div class="reading-chip">
+      <span class="c-name">${esc(r.label)}</span>
+      <span class="c-val">${sign}${esc(String(value))}</span>
+    </div>`).join("");
+
+  $("reading-rows").innerHTML = shown.map(({ r, value, sign }) =>
+    `<div class="reading-row">
+      <span class="r-name">${esc(r.label)}</span>
+      <span class="r-val">${sign}${esc(String(value))}</span>
+      <span class="r-why">${esc(r.meaning)}${
+        r.caveat ? ` <span class="r-caveat">${esc(r.caveat)}</span>` : ""
+      }</span>
+    </div>`).join("");
+
+  $("reading-synthesis").innerHTML = it.synthesis.map((s) => `<p>${esc(s)}</p>`).join("");
+  $("reading-caveats").innerHTML = it.caveats.map((c) => `<li>${esc(c)}</li>`).join("");
+  $("reading-derivation").textContent = it.derivation;
+}
+
 /**
  * Persistent banner for a degraded chain.
  *
@@ -352,6 +412,8 @@ function renderTerminal(d) {
     <div class="v ${d.totals.pc_oi_ratio > 1 ? "neg" : "pos"}">P/C ${px(d.totals.pc_oi_ratio, 2)}</div>
     <div class="sub">${count(d.totals.call_oi)}c · ${count(d.totals.put_oi)}p</div></div>`);
   $("kpi-row").innerHTML = tiles.join("");
+
+  renderInterpretation(d);
 
   $("price-title").textContent = `${d.instrument} · 1-minute`;
 

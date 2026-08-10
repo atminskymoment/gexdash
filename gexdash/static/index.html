@@ -123,6 +123,24 @@
         <div id="chart-readout" class="readout" aria-live="off"></div>
       </div>
       <div id="indicator-panes"></div>
+
+      <section id="reading" class="reading" hidden>
+        <div class="reading-head">
+          <span class="reading-label" id="reading-label">—</span>
+          <span class="reading-gloss" id="reading-gloss"></span>
+        </div>
+        <div class="reading-chips" id="reading-chips"></div>
+        <div class="reading-synthesis" id="reading-synthesis"></div>
+        <details class="reading-caveats">
+          <summary>What each reading means</summary>
+          <div class="reading-rows" id="reading-rows"></div>
+        </details>
+        <details class="reading-caveats">
+          <summary>What this reading assumes</summary>
+          <ul id="reading-caveats"></ul>
+          <p class="muted small" id="reading-derivation"></p>
+        </details>
+      </section>
     </section>
 
     <section class="card">

@@ -588,3 +588,66 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
    state of what is on screen, not an event that happened. */
 #degraded { margin: var(--gap) var(--gap) 0; }
 #degraded[hidden] { display: none; }
+
+/* ---- interpretation box ------------------------------------------------ */
+.reading {
+  margin-top: 10px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-1) 60%, var(--page));
+}
+.reading[hidden] { display: none !important; }
+.reading-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.reading-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  padding: 2px 7px; border-radius: 4px;
+  background: var(--surface-1); border: 1px solid var(--border); color: var(--text-primary);
+}
+.reading-gloss { font-size: 11.5px; color: var(--text-secondary); }
+
+.reading-rows { display: grid; gap: 5px; margin-top: 9px; }
+.reading-row {
+  display: grid; grid-template-columns: 116px 108px 1fr; gap: 10px;
+  align-items: baseline; font-size: 11.5px;
+}
+@media (max-width: 900px) {
+  .reading-row { grid-template-columns: 1fr; gap: 1px; }
+}
+.reading-row .r-name { color: var(--text-muted); }
+/* The value keeps a text token and takes its sign from an adjacent glyph,
+   not from being coloured -- same rule as everywhere else here. */
+.reading-row .r-val { font-weight: 660; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.reading-row .r-val .sign { margin-right: 3px; }
+.reading-row .r-val .sign.pos { color: var(--pos); }
+.reading-row .r-val .sign.neg { color: var(--neg); }
+.reading-row .r-why { color: var(--text-secondary); }
+.reading-row .r-caveat { color: var(--text-muted); font-style: italic; }
+
+.reading-synthesis {
+  margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-primary); line-height: 1.5;
+}
+.reading-synthesis p { margin: 0 0 5px; }
+.reading-synthesis p:last-child { margin-bottom: 0; }
+
+.reading-caveats { margin-top: 8px; font-size: 11px; color: var(--text-secondary); }
+.reading-caveats summary { cursor: pointer; color: var(--text-muted); }
+.reading-caveats ul { margin: 6px 0 0; padding-left: 16px; }
+.reading-caveats li { margin-bottom: 3px; }
+
+/* Compact value strip: the numbers at a glance, the prose below them. */
+.reading-chips {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 5px 10px; margin-top: 9px;
+}
+.reading-chip { display: flex; flex-direction: column; gap: 1px; }
+.reading-chip .c-name {
+  font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.reading-chip .c-val {
+  font-size: 13px; font-weight: 680; font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.reading-chip .c-val .sign { margin-right: 3px; }
+.reading-chip .c-val .sign.pos { color: var(--pos); }
+.reading-chip .c-val .sign.neg { color: var(--neg); }

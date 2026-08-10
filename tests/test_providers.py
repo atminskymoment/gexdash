@@ -402,3 +402,31 @@ def test_the_backoff_clears_once_a_good_chain_arrives(tmp_path):
     assert chain.meta["stale"] is False
     assert not provider._degraded, "a recovered feed must not stay backed off"
     assert store.load(instruments.SPX) is not None, "and the good chain is cached again"
+
+
+def test_the_retry_delay_doubles_while_the_feed_stays_bad(tmp_path):
+    """30s first -- the common case is a transient drop around the session
+    boundary, and a long first wait leaves the dashboard reading "n/a" well
+    after the data came back. Doubling stops a genuinely broken feed from
+    being re-pulled every 30s all night.
+    """
+    p = CachedProvider(_ZeroOIProvider(), ChainStore(tmp_path / "e.db"))
+    assert [p._backoff_seconds(n) for n in range(1, 7)] == [30, 60, 120, 240, 480, 480]
+
+
+def test_consecutive_failures_lengthen_the_wait_and_success_resets_it(tmp_path):
+    store = ChainStore(tmp_path / "e2.db")
+    p = CachedProvider(_ZeroOIProvider(), store)
+
+    for expected in (1, 2, 3):
+        p.get_chain(instruments.SPX, max_dte=30, force=True)
+        assert p._degraded[instruments.SPX.key][2] == expected
+
+    p.provider = MockProvider()
+    p.get_chain(instruments.SPX, max_dte=30, force=True)
+    assert instruments.SPX.key not in p._degraded
+
+    # A later failure starts the ladder again rather than resuming at 240s.
+    p.provider = _ZeroOIProvider()
+    p.get_chain(instruments.SPX, max_dte=30, force=True)
+    assert p._degraded[instruments.SPX.key][2] == 1

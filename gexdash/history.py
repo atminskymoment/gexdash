@@ -32,6 +32,7 @@ from .bars import PriceBars, build_bars
 
 __all__ = [
     "RANGES", "INTERVALS", "Plan", "resolve", "aggregate", "valid_intervals",
+    "apply_max_bars",
     "UNSUPPORTED_INTERVALS", "capability_matrix",
 ]
 
@@ -116,6 +117,11 @@ class Plan:
     frequency: int
     #: Aggregate the fetched bars up to this many minutes, if set.
     aggregate_minutes: int | None = None
+    #: Keep at most this many bars after fetching. The feed has no period
+    #: shorter than a month for daily bars -- ``periodType=day`` serves minute
+    #: frequencies only -- so short daily ranges must over-fetch and be cut
+    #: back, or "5D" would quietly draw a month.
+    max_bars: int | None = None
     #: Non-fatal adjustments, surfaced to the user.
     notes: list[str] = field(default_factory=list)
     served_interval_key: str = ""
@@ -152,6 +158,10 @@ def valid_intervals(range_key: str) -> list[str]:
             continue
         # A bar bigger than the whole window yields one or two candles.
         if iv.intraday and iv.minutes and days == 1 and iv.minutes > 240:
+            continue
+        # Same rule, applied to daily bars: one or two candles is not a chart.
+        # A week bar over one day was already excluded for this reason.
+        if iv.kind == "daily" and days < 3:
             continue
         out.append(key)
     return out
@@ -210,9 +220,23 @@ def resolve(range_key: str, interval_key: str) -> Plan:
                         notes=notes, served_interval_key=iv.key)
         if days <= 180:
             return Plan(range_key, interval_key, "month", _period_for(days // 30 or 1, (1, 2, 3, 6)),
-                        "daily", 1, notes=notes, served_interval_key=iv.key)
+                        "daily", 1, notes=notes, served_interval_key=iv.key, max_bars=days)
         return Plan(range_key, interval_key, "year", _period_for(days // 365 or 1, (1, 2, 3, 5, 10, 15, 20)),
                     "daily", 1, notes=notes, served_interval_key=iv.key)
+
+    # Weekly bars also serve month and ytd periods -- verified live. Sending
+    # every weekly request as a year period, as this once did, silently turned
+    # "3M / Weekly" into a full year of candles: the axis relabels and the
+    # chart looks entirely reasonable, so nothing announces the substitution.
+    # Monthly really is year-only; the feed rejects month + monthly outright.
+    if iv.kind == "weekly":
+        if rng.days is None:
+            return Plan(range_key, interval_key, "ytd", 1, "weekly", 1,
+                        notes=notes, served_interval_key=iv.key)
+        if days <= 180:
+            return Plan(range_key, interval_key, "month",
+                        _period_for(days // 30 or 1, (1, 2, 3, 6)), "weekly", 1,
+                        notes=notes, served_interval_key=iv.key)
 
     years = _period_for(max(days // 365, 1), (1, 2, 3, 5, 10, 15, 20))
     return Plan(range_key, interval_key, "year", years, iv.kind, 1,
@@ -248,6 +272,34 @@ def aggregate(bars: PriceBars, minutes: int) -> PriceBars:
         bars.instrument, rows, interval_minutes=minutes,
         meta={**(bars.meta or {}), "aggregated_from_minutes": bars.interval_minutes},
     )
+
+
+def apply_max_bars(bars: PriceBars, plan: Plan) -> PriceBars:
+    """Cut an over-fetched series back to the requested range.
+
+    Counts bars rather than filtering on a wall-clock cutoff. A cutoff blanks
+    the chart whenever the most recent session is older than the window --
+    ask for "1D" before Monday's open and the last real session is Friday's,
+    which a 24-hour cutoff discards. Counting keeps whatever exists.
+
+    Records the cut in ``plan.notes``, since a silently shortened series is
+    the same class of problem as a silently lengthened one.
+    """
+    keep = plan.max_bars
+    if not keep or len(bars) <= keep:
+        return bars
+
+    dropped = len(bars) - keep
+    plan.notes.append(
+        f"The feed's shortest daily period is one month, so {len(bars)} bars were "
+        f"fetched and the oldest {dropped} dropped to match {RANGES[plan.range_key].label}."
+    )
+    rows = [{
+        "time": bars.time[i], "open": float(bars.open[i]), "high": float(bars.high[i]),
+        "low": float(bars.low[i]), "close": float(bars.close[i]), "volume": float(bars.volume[i]),
+    } for i in range(len(bars) - keep, len(bars))]
+    return build_bars(bars.instrument, rows,
+                      interval_minutes=bars.interval_minutes, meta=bars.meta)
 
 
 def capability_matrix() -> dict:

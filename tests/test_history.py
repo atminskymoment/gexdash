@@ -21,6 +21,7 @@ from gexdash.history import (
     RANGES,
     UNSUPPORTED_INTERVALS,
     aggregate,
+    apply_max_bars,
     capability_matrix,
     resolve,
     valid_intervals,
@@ -212,3 +213,93 @@ def test_aggregation_records_its_provenance():
 def test_vwap_still_works_after_aggregation():
     out = aggregate(_bars(8, minutes=30), 120)
     assert np.all(np.isfinite(out.vwap()))
+
+
+# ----------------------------------------------------------------------
+# The requested range must actually be the range served
+# ----------------------------------------------------------------------
+
+
+def _implied_days(plan):
+    """Roughly how far back the provider request reaches."""
+    return {"day": 1, "month": 30, "year": 365, "ytd": 365}[plan.period_type] * plan.period
+
+
+@pytest.mark.parametrize("range_key,period_type,period", [
+    ("3M", "month", 3), ("6M", "month", 6), ("YTD", "ytd", 1),
+    ("1Y", "year", 1), ("2Y", "year", 2),
+])
+def test_weekly_bars_honour_the_requested_range(range_key, period_type, period):
+    """Weekly used to be sent as a year period regardless of the range.
+
+    "3M / Weekly" therefore drew a full year. Nothing announced it: the axis
+    relabels and a year of weekly candles looks like a perfectly ordinary
+    chart. Verified live that the feed accepts month and ytd periods with
+    weekly frequency; only *monthly* is year-only.
+    """
+    plan = resolve(range_key, "1W")
+    assert (plan.period_type, plan.period) == (period_type, period)
+    assert plan.frequency_type == "weekly"
+
+
+def test_no_offered_combination_reaches_far_past_its_range():
+    """A blanket guard against the whole class, not just the weekly case."""
+    for range_key in RANGES:
+        days = RANGES[range_key].days
+        if days is None or days < 30:
+            continue          # sub-month ranges over-fetch by necessity, see below
+        for interval in valid_intervals(range_key):
+            plan = resolve(range_key, interval)
+            if plan.max_bars:
+                continue      # trimmed after fetching instead
+            assert _implied_days(plan) <= days * 1.5, (
+                f"{range_key}/{interval} requests ~{_implied_days(plan)}d "
+                f"for a {days}d range"
+            )
+
+
+def test_short_daily_ranges_are_capped_because_no_shorter_period_exists():
+    """periodType=day serves minute frequencies only, verified live.
+
+    So a 5-day daily chart has to fetch a month and cut back.
+    """
+    assert resolve("5D", "1D").max_bars == 5
+    assert resolve("10D", "1D").max_bars == 10
+    assert resolve("1Y", "1D").max_bars is None, "no cap needed once the period fits"
+
+
+def test_a_daily_bar_over_one_day_is_not_offered():
+    """One candle is not a chart -- the same reason a week bar over one day
+    is already excluded."""
+    assert "1D" not in valid_intervals("1D")
+    assert valid_intervals("1D"), "the range must still offer intraday sizes"
+    assert "1D" in valid_intervals("1M")
+
+
+def test_apply_max_bars_keeps_the_most_recent_and_says_so():
+    src = _bars(40, minutes=1440)
+    plan = resolve("5D", "1D")
+    out = apply_max_bars(src, plan)
+
+    assert len(out) == 5
+    assert out.close[-1] == src.close[-1], "must keep the newest, not the oldest"
+    assert out.open[0] == src.open[-5]
+    assert any("dropped" in n for n in plan.notes), "a silent trim is the same bug"
+
+
+def test_apply_max_bars_is_a_noop_when_the_series_already_fits():
+    src = _bars(3, minutes=1440)
+    plan = resolve("5D", "1D")
+    assert apply_max_bars(src, plan) is src
+    assert plan.notes == []
+
+
+def test_apply_max_bars_counts_bars_rather_than_filtering_on_a_cutoff():
+    """A wall-clock cutoff blanks the chart when the last session predates it.
+
+    Ask for 1D before Monday's open and the newest real bar is Friday's.
+    Counting keeps whatever exists; a cutoff would return nothing.
+    """
+    stale = _bars(30, minutes=1440, start=datetime(2020, 1, 6, 14, 30, tzinfo=timezone.utc))
+    out = apply_max_bars(stale, resolve("5D", "1D"))
+    assert len(out) == 5, "old bars are still bars"

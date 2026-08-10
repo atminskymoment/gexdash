@@ -1398,8 +1398,11 @@ $("sel-range").addEventListener("change", (e) => {
   state.range = e.target.value;
   const cap = state.meta?.chart;
   const now = new Set((cap.ranges.find((r) => r.key === state.range) || {}).intervals || []);
-  // Coarsen rather than let the server clamp behind the user's back.
-  if (!now.has(state.interval)) state.interval = [...now].pop() || "1D";
+  // Coarsen rather than let the server clamp behind the user's back -- but
+  // only to the finest size the new range allows. Taking the last entry
+  // picked the coarsest, so stepping 1D/1m up to 3M landed on Weekly when
+  // Daily is the nearer equivalent of what was on screen.
+  if (!now.has(state.interval)) state.interval = [...now][0] || "1D";
   loadBars();
 });
 $("sel-interval").addEventListener("change", (e) => { state.interval = e.target.value; loadBars(); });

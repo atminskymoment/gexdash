@@ -30,7 +30,7 @@ from . import exposure, instruments
 from .exposure import EXPIRY_WINDOWS, ExposureConfig
 from .providers import build_provider
 from .sessions import market_phase
-from .providers.base import ProviderError
+from .providers.base import PriceHistoryProvider, PriceHistoryUnavailable, ProviderError
 from .store import CachedProvider, ChainStore
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -135,6 +135,12 @@ UNAVAILABLE_TILES = {
     "zone_state": "proprietary label - define your own thresholds (tier D)",
     "speed_engine": "needs underlying time-and-sales (tier C)",
     "king_maker": "proprietary label (tier D)",
+    # Not the same kind of gap as the others. Every tile above needs a *trade
+    # feed* for this instrument; advancing/declining counts, A/D ratio and
+    # gainers/losers need per-constituent quotes for all 500 index members --
+    # a different asset class entirely, and not something the OHLC work brings
+    # with it.
+    "market_internals": "needs per-constituent equity quotes for the whole index - a separate feed, not options data",
 }
 
 
@@ -228,6 +234,54 @@ async def api_stream(
     )
 
 
+@app.get("/api/history")
+async def api_history(
+    symbol: str = Query("SPX"),
+    interval_minutes: int = Query(1, ge=1, le=60),
+    lookback_hours: float = Query(7.0, gt=0, le=48),
+):
+    """Intraday OHLCV bars for the terminal view's price panel.
+
+    Deliberately a separate endpoint from /api/exposure rather than folded
+    into it: bars change on a different cadence than the exposure surface,
+    and doubling the SSE payload every 2 seconds to redraw candles that moved
+    by one bar would be waste.
+
+    Returns 200 with ``{"available": false, "reason": ...}`` rather than an
+    error status when the provider cannot serve history -- the dashboard is
+    fully usable without it, and the UI renders the reason in place of the
+    chart.
+    """
+    inst = _resolve(symbol)
+    provider = get_provider()
+    source = getattr(provider, "provider", provider)  # unwrap CachedProvider
+
+    if not isinstance(source, PriceHistoryProvider):
+        return {
+            "available": False,
+            "symbol": inst.key,
+            "reason": f"the {provider.name} provider does not supply price history",
+        }
+
+    def _fetch():
+        return source.get_price_history(
+            inst, interval_minutes=interval_minutes, lookback_hours=lookback_hours
+        )
+
+    try:
+        bars = await asyncio.to_thread(_fetch)
+    except PriceHistoryUnavailable as exc:
+        return {"available": False, "symbol": inst.key, "reason": str(exc)}
+    except ProviderError as exc:
+        return {"available": False, "symbol": inst.key, "reason": f"provider error: {exc}"}
+
+    payload = bars.to_dict()
+    payload["available"] = True
+    payload["symbol"] = inst.key
+    payload["synthetic"] = bool((bars.meta or {}).get("synthetic"))
+    return payload
+
+
 @app.get("/api/meta")
 async def api_meta():
     return {
@@ -248,6 +302,7 @@ async def api_meta():
         "dealer_signs": ["long_calls_short_puts", "short_calls_long_puts", "all_long"],
         "flip_methods": ["spot_solve", "cumulative"],
         "provider": get_provider().name,
+        "views": ["columns", "terminal"],
     }
 
 

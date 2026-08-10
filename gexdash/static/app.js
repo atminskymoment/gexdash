@@ -1,24 +1,39 @@
 /* gexdash client.
  *
- * Charts are hand-rolled SVG: no chart library, no CDN, no build step.
+ * Two layouts over one dataset:
+ *   terminal  — chart-centric: KPI strip, candles with level annotations,
+ *               tabbed exposure-by-strike, order flow & bias.
+ *   columns   — panel-centric: market bias / spot+levels / zone / signal chart.
  *
- * Two structural choices worth naming, both departures from the commercial
- * dashboard this layout is modelled on:
+ * Charts are hand-rolled SVG: no chart library, no CDN, no build step. Both
+ * views share the primitives in the CHART PRIMITIVES section below — the
+ * horizontal exposure panel is a coordinate swap of the vertical one, not a
+ * second renderer, so they cannot drift apart.
  *
- *  1. NO DUAL AXES. The reference stacks two measures with different scales
- *     on one plot ("VOL / GEX", "GEX / VANX"). The alignment of two y-scales
- *     is arbitrary, so it invents a correlation the data does not contain.
- *     Here each measure is its own small multiple over a shared strike axis,
- *     which supports the same visual comparison honestly.
+ * Two structural rules, both departures from the commercial dashboards these
+ * layouts are modelled on:
  *
- *  2. Calls/puts are BLUE/ORANGE, not green/red. Green-vs-red is the worst
- *     pair under colour-vision deficiency, and this is the one distinction on
- *     the page that must never be ambiguous.
+ *  1. NO DUAL AXES. Two y-scales on one plot align arbitrarily and invent a
+ *     correlation the data does not contain. Each measure gets its own plot.
+ *     Level *annotations* on the price axis are fine — they are prices. An
+ *     exposure curve on that axis would not be.
+ *  2. Calls/puts are BLUE/ORANGE, not green/red — the worst pair under
+ *     colour-vision deficiency, and the one distinction that must never be
+ *     ambiguous. Candle bodies use the diverging pos/neg pair, which is the
+ *     same blue/red used for signed exposure.
  */
 
 const $ = (id) => document.getElementById(id);
 
-const state = { data: null, meta: null, stream: null, showTable: false };
+const state = {
+  data: null,
+  bars: null,
+  meta: null,
+  stream: null,
+  showTable: false,
+  view: "terminal",
+  expTab: "gex",
+};
 
 /* ----------------------------------------------------------- formatting */
 
@@ -43,279 +58,16 @@ function count(v) {
 const px = (v, d = 2) => (v === null || v === undefined ? "—" : v.toFixed(d));
 const signed = (v, d = 2) => (v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}`);
 
-/* Show decimals only when the value has them. Listed strikes are whole
-   numbers and rendering them as "7625.00" is pure noise, but spot and the
-   solved flip are genuinely fractional and must keep their precision. */
+/* Decimals only when the value has them. Listed strikes are whole numbers and
+   "7625.00" is noise; spot and the solved flip are genuinely fractional. */
 function priceFmt(v) {
   if (v === null || v === undefined) return "—";
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 
-/* ---------------------------------------------------------------- fetch */
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
-function params() {
-  return new URLSearchParams({
-    symbol: $("f-symbol").value || "SPX",
-    expiry_window: $("f-window").value,
-    dealer_sign: $("f-sign").value,
-    flip_method: $("f-flip").value,
-  });
-}
-
-async function loadMeta() {
-  const meta = await (await fetch("/api/meta")).json();
-  state.meta = meta;
-
-  const sel = $("f-symbol");
-  sel.innerHTML = Object.entries(meta.families)
-    .map(([family, keys]) => {
-      const opts = keys
-        .map((k) => {
-          const i = meta.instruments.find((x) => x.key === k);
-          return `<option value="${k}">${k} — ${i.label}</option>`;
-        })
-        .join("");
-      return `<optgroup label="${family}">${opts}</optgroup>`;
-    })
-    .join("");
-  // ?symbol= makes a given ticker linkable and bookmarkable.
-  const wanted = (new URLSearchParams(location.search).get("symbol") || "SPX").toUpperCase();
-  sel.value = meta.instruments.some((i) => i.key === wanted) ? wanted : "SPX";
-}
-
-async function load() {
-  $("main").classList.add("stale");
-  try {
-    const res = await fetch(`/api/exposure?${params()}`);
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
-    render(body);
-    notice(null);
-  } catch (err) {
-    notice(err.message, true);
-  } finally {
-    $("main").classList.remove("stale");
-  }
-}
-
-/* Errors reuse a single node rather than prepending. Under SSE this fires on
- * every failed tick, and EventSource retries on a timer — prepending would
- * grow an unbounded stack of identical divs within a minute. */
-function notice(msg, isError) {
-  const box = $("notices");
-  if (!msg) {
-    box.querySelectorAll(".err").forEach((n) => n.remove());
-    return;
-  }
-  const cls = isError ? "err" : "info";
-  let el = box.querySelector(`.notice.${cls}`);
-  if (!el) {
-    el = document.createElement("div");
-    el.className = `notice ${cls}`;
-    box.prepend(el);
-  }
-  const n = isError ? Number(el.dataset.count || 0) + 1 : 0;
-  el.dataset.count = n;
-  el.innerHTML =
-    `<strong>${isError ? "Error" : "Note"}:</strong> ${msg}` +
-    (n > 1 ? ` <span class="muted">(×${n})</span>` : "");
-}
-
-/* --------------------------------------------------------------- render */
-
-function render(d) {
-  state.data = d;
-  renderHeader(d);
-  renderStrip(d);
-  renderBias(d);
-  renderSpot(d);
-  renderRadar(d);
-  renderCharts(d);
-  renderTableView(d);
-  renderDiagnostics(d);
-}
-
-function renderHeader(d) {
-  const s = d.session || {};
-  $("clock-time").textContent = s.exchange_time || "—";
-  const phase = $("clock-phase");
-  phase.textContent = s.phase || "—";
-  phase.className = `phase ${s.phase || ""}`;
-
-  const secs = s.seconds_to_next || 0;
-  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
-  $("clock-next").textContent = s.next_transition ? `→ ${s.next_transition} in ${h}h ${m}m` : "";
-
-  $("badge-provider").textContent = `provider: ${d.provider}`;
-  const syn = $("badge-synthetic");
-  syn.hidden = !d.synthetic;
-  syn.textContent = "synthetic — not market data";
-}
-
-function renderStrip(d) {
-  const lo = Math.min(...d.strikes), hi = Math.max(...d.strikes);
-  const im = d.instrument_meta || {};
-  $("strip-range").textContent = `${priceFmt(lo)} – ${priceFmt(hi)}`;
-  $("strip-strikes").textContent = `${d.strikes.length} strikes (±${im.display_strikes} ATM, ${im.strike_step} step)`;
-  $("strip-contracts").textContent = d.contracts;
-  $("strip-exercise").innerHTML = im.note
-    ? `<span style="color:var(--serious)">⚠ ${im.note}</span>`
-    : `${im.exercise_style} · ×${im.multiplier}`;
-  $("strip-oi").innerHTML =
-    `OI as of <b>${d.diagnostics.oi_asof || "unknown"}</b> — OCC publishes once daily; ` +
-    `re-priced against live spot` + (d.stale ? ' · <span style="color:var(--critical)">STALE CHAIN</span>' : "");
-}
-
-const EXPOSURE_TILES = [
-  ["gex", "GEX", "$ delta per +1% spot"],
-  ["dex", "DEX", "$ delta"],
-  ["cex", "CEX", "$ delta per day"],
-  ["vanx", "VANX", "$ delta per +1 vol pt"],
-  ["vex", "VEX", "$ per +1 vol pt"],
-  ["thex", "THEX", "$ per day"],
-];
-
-function renderBias(d) {
-  const r = d.regime || {};
-  const box = $("regime");
-  box.className = `regime ${(r.label || "").toLowerCase()}`;
-  $("regime-label").textContent = r.label || "—";
-  $("regime-gloss").textContent = r.gloss || "";
-  // The reference dashboard's equivalent labels are proprietary and
-  // undocumented. This one is ours, and says so on screen rather than only
-  // in a code comment.
-  $("regime-src").textContent = r.derivation
-    ? `${r.derivation} · ${r.gamma_sign} gamma, ${r.position}`
-    : "";
-
-  $("exposure-tiles").innerHTML = EXPOSURE_TILES.map(([key, label, unit]) => {
-    const v = d.totals[key];
-    const cls = v > 0 ? "pos" : v < 0 ? "neg" : "";
-    return `<div class="tile" title="${unit}"><div class="k">${label}</div><div class="v ${cls}">${money(v)}</div></div>`;
-  }).join("");
-
-  const z = d.diagnostics.zero_dte_gex_share_pct;
-  $("t-zerodte").textContent = d.diagnostics.zero_dte_expired
-    ? "0DTE expired"
-    : z === null || z === undefined ? "—" : `${z.toFixed(1)}%`;
-
-  $("t-pcoi").textContent = px(d.totals.pc_oi_ratio, 3);
-  $("t-pcvol").textContent = px(d.totals.pc_volume_ratio, 3);
-
-  const c = d.totals.call_oi || 0, p = d.totals.put_oi || 0;
-  $("pcbar-fill").style.width = `${(c / Math.max(c + p, 1)) * 100}%`;
-  $("pc-calls").textContent = count(c);
-  $("pc-puts").textContent = count(p);
-
-  renderUnavailable("unavailable-bias", d, ["oi_flow", "volume_bias", "kinetics", "dealer_regime"]);
-}
-
-function renderUnavailable(hostId, d, keys) {
-  $(hostId).innerHTML = keys
-    .filter((k) => d.unavailable?.[k])
-    .map(
-      (k) => `<div class="tile unavailable"><div class="v">—</div><div class="body">
-        <div class="k">${k.replace(/_/g, " ")}</div>
-        <div class="why">${d.unavailable[k]}</div></div></div>`
-    )
-    .join("");
-}
-
-const GEX_LEVEL_ROWS = [
-  ["max_pos_gex", "Max +GEX", "var(--pos)"],
-  ["call_wall", "Call wall", "var(--series-call)"],
-  ["gamma_flip", "Flip", "var(--warning)"],
-  ["put_wall", "Put wall", "var(--series-put)"],
-  ["max_neg_gex", "Max −GEX", "var(--neg)"],
-];
-
-function renderSpot(d) {
-  $("spot").textContent = priceFmt(d.spot);
-  const im = d.instrument_meta || {};
-  $("spot-meta").innerHTML =
-    `${im.label || d.instrument}<br>${d.diagnostics.expiries_in_window} expiries · ` +
-    `${d.diagnostics.expiry_window}<br>${d.diagnostics.pricing_model}`;
-
-  $("gexlevels-body").innerHTML = GEX_LEVEL_ROWS.map(([key, name, colour]) => {
-    const lv = d.levels[key];
-    if (!lv || lv.strike === null) {
-      return `<tr><td><span class="lv"><span class="swatch" style="background:${colour}"></span>${name}</span></td>
-              <td class="num muted" colspan="3">none in range</td></tr>`;
-    }
-    const cls = lv.distance > 0 ? "pos" : lv.distance < 0 ? "neg" : "";
-    return `<tr>
-      <td><span class="lv"><span class="swatch" style="background:${colour}"></span>${name}</span></td>
-      <td class="num muted">${lv.value === null ? "" : money(lv.value)}</td>
-      <td class="num">${priceFmt(lv.strike)}</td>
-      <td class="num ${cls}">${signed(lv.distance)}</td>
-    </tr>`;
-  }).join("");
-
-  $("t-maxpain").textContent = priceFmt(d.levels.max_pain?.strike);
-  $("maxpain-exp").textContent = d.diagnostics.max_pain_expiry
-    ? `· ${String(d.diagnostics.max_pain_expiry).slice(0, 10)}`
-    : "";
-
-  const cw = d.levels.call_wall, pw = d.levels.put_wall;
-  $("t-resist").textContent = signed(cw?.distance);
-  $("t-resist-sub").textContent = cw ? `call wall ${priceFmt(cw.strike)} · ${money(cw.value)}` : "";
-  $("t-support").textContent = signed(pw?.distance);
-  $("t-support-sub").textContent = pw ? `put wall ${priceFmt(pw.strike)} · ${money(pw.value)}` : "";
-  $("t-poc").textContent = priceFmt(d.levels.volume_poc?.strike);
-}
-
-/* --------------------------------------------------- active level radar */
-
-const RADAR_LEVELS = [
-  ["max_pos_gex", "Max +GEX"],
-  ["call_wall", "Call wall"],
-  ["gamma_flip", "Flip"],
-  ["volume_poc", "Volume POC"],
-  ["max_pain", "Max pain"],
-  ["put_wall", "Put wall"],
-  ["max_neg_gex", "Max −GEX"],
-];
-
-/* Levels sorted by price with spot in its sorted position, so the panel reads
- * as a price ladder: what is above, what is below, and how far. Every input
- * is tier A. */
-function renderRadar(d) {
-  const rows = RADAR_LEVELS.filter(([k]) => d.levels[k]?.strike !== null && d.levels[k] !== undefined).map(
-    ([k, name]) => ({ name, price: d.levels[k].strike, dist: d.levels[k].distance, spot: false })
-  );
-  rows.push({ name: "Spot", price: d.spot, dist: 0, spot: true });
-  rows.sort((a, b) => b.price - a.price);
-
-  $("radar").innerHTML = rows
-    .map((r) => {
-      if (r.spot) {
-        return `<div class="radar-row is-spot">
-          <span class="nm">Spot</span><span class="px">${priceFmt(r.price)}</span></div>`;
-      }
-      const side = r.price > d.spot ? "above" : "below";
-      const cls = r.dist > 0 ? "pos" : "neg";
-      return `<div class="radar-row ${side}">
-        <span class="nm">${r.name}</span>
-        <span class="px">${priceFmt(r.price)}</span>
-        <span class="dl ${cls}">${signed(r.dist)}</span></div>`;
-    })
-    .join("");
-
-  renderUnavailable("unavailable-zone", d, ["zone_state", "speed_engine", "intraday_oi_change", "king_maker"]);
-}
-
-/* --------------------------------------------------------------- charts */
-
-const AXIS_BAND = 20;
-const PLOT_H = 86;
-
-function barPath(x, y, w, h, up) {
-  const r = Math.min(3, w / 2, Math.abs(h));
-  if (h <= 0.5) return `M${x},${y}h${w}`;
-  return up
-    ? `M${x},${y + h} v${-(h - r)} a${r},${r} 0 0 1 ${r},${-r} h${w - 2 * r} a${r},${r} 0 0 1 ${r},${r} v${h - r} z`
-    : `M${x},${y} v${h - r} a${r},${r} 0 0 0 ${r},${r} h${w - 2 * r} a${r},${r} 0 0 0 ${r},${-r} v${-(h - r)} z`;
-}
+/* ═══════════════════════ CHART PRIMITIVES (shared) ═══════════════════════ */
 
 /* A fine ladder on purpose. A coarse 1/2/5/10 ladder rounds a 5.7-unit
  * maximum up to 10, so the tallest bar fills barely half its plot and the
@@ -333,6 +85,24 @@ function axisTicks(maxAbs, isSigned) {
   return isSigned ? { bound: m, ticks: [-m, 0, m] } : { bound: m, ticks: [0, m / 2, m] };
 }
 
+/** Vertical bar: rounded outer end, square to the baseline. */
+function barPathV(x, y, w, h, up) {
+  const r = Math.min(3, w / 2, Math.abs(h));
+  if (h <= 0.5) return `M${x},${y}h${w}`;
+  return up
+    ? `M${x},${y + h} v${-(h - r)} a${r},${r} 0 0 1 ${r},${-r} h${w - 2 * r} a${r},${r} 0 0 1 ${r},${r} v${h - r} z`
+    : `M${x},${y} v${h - r} a${r},${r} 0 0 0 ${r},${r} h${w - 2 * r} a${r},${r} 0 0 0 ${r},${-r} v${-(h - r)} z`;
+}
+
+/** Horizontal bar: the same shape rotated. `len` grows right when `right`. */
+function barPathH(x0, y, len, thick, right) {
+  const r = Math.min(3, thick / 2, Math.abs(len));
+  if (len <= 0.5) return `M${x0},${y}v${thick}`;
+  return right
+    ? `M${x0},${y} h${len - r} a${r},${r} 0 0 1 ${r},${r} v${thick - 2 * r} a${r},${r} 0 0 1 ${-r},${r} h${-(len - r)} z`
+    : `M${x0},${y} h${-(len - r)} a${r},${r} 0 0 0 ${-r},${r} v${thick - 2 * r} a${r},${r} 0 0 0 ${r},${r} h${len - r} z`;
+}
+
 /* Strikes shown in the plots. Never a silent cap — the count is displayed. */
 function visibleIndices(d, pct = 0.05) {
   const lo = d.spot * (1 - pct), hi = d.spot * (1 + pct);
@@ -340,111 +110,624 @@ function visibleIndices(d, pct = 0.05) {
   return idx.length >= 5 ? idx : d.strikes.map((_, i) => i);
 }
 
-const CHART_SPECS = [
-  { key: "gex", title: "Gamma exposure (GEX)", fmt: money, kind: "diverging" },
-  { key: "dex", title: "Delta exposure (DEX)", fmt: money, kind: "diverging" },
-  { key: "vanx", title: "Vanna exposure (VANX)", fmt: money, kind: "diverging" },
-  { key: "volume", title: "Contract volume", fmt: count, kind: "grouped" },
+/** Metric definitions, shared by both views' exposure charts. */
+const METRICS = {
+  gex: { label: "Gamma", title: "Gamma exposure (GEX)", fmt: money, kind: "diverging", key: "gex" },
+  dex: { label: "Delta", title: "Delta exposure (DEX)", fmt: money, kind: "diverging", key: "dex" },
+  vanx: { label: "Vanna", title: "Vanna exposure (VANX)", fmt: money, kind: "diverging", key: "vanx" },
+  cex: { label: "Charm", title: "Charm exposure (CEX)", fmt: money, kind: "diverging", key: "cex" },
+  volume: { label: "Volume", title: "Contract volume", fmt: count, kind: "grouped", a: "call_volume", b: "put_volume" },
+  oi: { label: "OI", title: "Open interest", fmt: count, kind: "grouped", a: "call_oi", b: "put_oi" },
+};
+
+function seriesFor(d, spec, idx) {
+  if (spec.kind === "grouped") {
+    const a = idx.map((i) => d[spec.a][i]), b = idx.map((i) => d[spec.b][i]);
+    return { grouped: true, a, b, maxAbs: Math.max(...a, ...b, 1) };
+  }
+  const v = idx.map((i) => d[spec.key][i]);
+  return { grouped: false, v, maxAbs: Math.max(...v.map(Math.abs), 1) };
+}
+
+const legendFor = (spec) =>
+  spec.kind === "grouped"
+    ? `<span class="item"><span class="swatch" style="background:var(--series-call)"></span>calls</span>
+       <span class="item"><span class="swatch" style="background:var(--series-put)"></span>puts</span>`
+    : `<span class="item"><span class="swatch" style="background:var(--pos)"></span>+</span>
+       <span class="item"><span class="swatch" style="background:var(--neg)"></span>−</span>`;
+
+/* ---------------------------------------------------------------- fetch */
+
+function params() {
+  return new URLSearchParams({
+    symbol: $("f-symbol").value || "SPX",
+    expiry_window: $("f-window").value,
+    dealer_sign: $("f-sign").value,
+    flip_method: $("f-flip").value,
+  });
+}
+
+async function loadMeta() {
+  const meta = await (await fetch("/api/meta")).json();
+  state.meta = meta;
+  const sel = $("f-symbol");
+  sel.innerHTML = Object.entries(meta.families)
+    .map(([family, keys]) => {
+      const opts = keys.map((k) => {
+        const i = meta.instruments.find((x) => x.key === k);
+        return `<option value="${k}">${k} — ${esc(i.label)}</option>`;
+      }).join("");
+      return `<optgroup label="${esc(family)}">${opts}</optgroup>`;
+    }).join("");
+  const wanted = (new URLSearchParams(location.search).get("symbol") || "SPX").toUpperCase();
+  sel.value = meta.instruments.some((i) => i.key === wanted) ? wanted : "SPX";
+}
+
+async function load() {
+  const host = activeMain();
+  host.classList.add("stale");
+  try {
+    const res = await fetch(`/api/exposure?${params()}`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+    render(body);
+    notice(null);
+  } catch (err) {
+    notice(err.message, true);
+  } finally {
+    host.classList.remove("stale");
+  }
+}
+
+async function loadBars() {
+  try {
+    const res = await fetch(`/api/history?symbol=${$("f-symbol").value}&interval_minutes=1&lookback_hours=7`);
+    state.bars = await res.json();
+  } catch (err) {
+    state.bars = { available: false, reason: err.message };
+  }
+  if (state.view === "terminal") renderPriceChart();
+}
+
+/* Errors reuse a single node. Under SSE this fires on every failed tick and
+ * EventSource retries on a timer — prepending would grow an unbounded stack. */
+function notice(msg, isError) {
+  const box = $("notices");
+  if (!msg) { box.querySelectorAll(".err").forEach((n) => n.remove()); return; }
+  const cls = isError ? "err" : "info";
+  let el = box.querySelector(`.notice.${cls}`);
+  if (!el) { el = document.createElement("div"); el.className = `notice ${cls}`; box.prepend(el); }
+  const n = isError ? Number(el.dataset.count || 0) + 1 : 0;
+  el.dataset.count = n;
+  el.innerHTML = `<strong>${isError ? "Error" : "Note"}:</strong> ${esc(msg)}` +
+    (n > 1 ? ` <span class="muted">(×${n})</span>` : "");
+}
+
+/* --------------------------------------------------------------- render */
+
+const activeMain = () => (state.view === "terminal" ? $("view-terminal") : $("view-columns"));
+
+function render(d) {
+  state.data = d;
+  renderHeader(d);
+  renderStrip(d);
+  // Only the mounted view is rendered: the other one's containers report
+  // clientWidth 0 while hidden, which would produce degenerate geometry.
+  if (state.view === "terminal") renderTerminal(d);
+  else renderColumns(d);
+  renderTableView(d);
+  renderDiagnostics(d);
+}
+
+function renderHeader(d) {
+  const s = d.session || {};
+  $("clock-time").textContent = s.exchange_time || "—";
+  const phase = $("clock-phase");
+  phase.textContent = s.phase || "—";
+  phase.className = `phase ${s.phase || ""}`;
+  const secs = s.seconds_to_next || 0;
+  $("clock-next").textContent = s.next_transition
+    ? `→ ${s.next_transition} in ${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m` : "";
+  $("badge-provider").textContent = `provider: ${d.provider}`;
+  const syn = $("badge-synthetic");
+  syn.hidden = !d.synthetic;
+  syn.textContent = "synthetic — not market data";
+}
+
+function renderStrip(d) {
+  const lo = Math.min(...d.strikes), hi = Math.max(...d.strikes);
+  const im = d.instrument_meta || {};
+  $("strip-range").textContent = `${priceFmt(lo)} – ${priceFmt(hi)}`;
+  $("strip-strikes").textContent = `${d.strikes.length} strikes (±${im.display_strikes} ATM, ${im.strike_step} step)`;
+  $("strip-contracts").textContent = d.contracts;
+  $("strip-exercise").innerHTML = im.note
+    ? `<span style="color:var(--serious)">⚠ ${esc(im.note)}</span>`
+    : `${esc(im.exercise_style || "")} · ×${im.multiplier}`;
+  $("strip-oi").innerHTML =
+    `OI as of <b>${d.diagnostics.oi_asof || "unknown"}</b> — OCC publishes once daily; re-priced against live spot` +
+    (d.stale ? ' · <span style="color:var(--critical)">STALE CHAIN</span>' : "");
+}
+
+/* ═══════════════════════════ TERMINAL VIEW ═══════════════════════════ */
+
+const KPIS = [
+  ["gex", "Net GEX", "$ delta per +1% spot"],
+  ["dex", "Net DEX", "δ exposure"],
+  ["vanx", "Net vanna", "dδ/dσ"],
+  ["cex", "Net charm", "dδ/dt"],
 ];
 
-function renderCharts(d) {
+function renderTerminal(d) {
+  // KPI strip
+  const flip = d.levels.gamma_flip?.strike;
+  const tiles = KPIS.map(([k, label, sub]) => {
+    const v = d.totals[k];
+    return `<div class="kpi"><div class="k">${label}</div>
+      <div class="v ${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${money(v)}</div>
+      <div class="sub">${sub}</div></div>`;
+  });
+  tiles.push(`<div class="kpi"><div class="k">Gamma flip</div>
+    <div class="v">${flip === null || flip === undefined ? "—" : priceFmt(flip)}</div>
+    <div class="sub">zero-γ strike${flip === null ? " — none in range" : ""}</div></div>`);
+  tiles.push(`<div class="kpi"><div class="k">Open interest</div>
+    <div class="v ${d.totals.pc_oi_ratio > 1 ? "neg" : "pos"}">P/C ${px(d.totals.pc_oi_ratio, 2)}</div>
+    <div class="sub">${count(d.totals.call_oi)}c · ${count(d.totals.put_oi)}p</div></div>`);
+  $("kpi-row").innerHTML = tiles.join("");
+
+  $("price-title").textContent = `${d.instrument} · 1-minute`;
+
+  renderExpTabs();
+  renderExposureH(d);
+  renderOrderFlow(d);
+  renderPriceChart();
+}
+
+/* ------------------------- candlestick price panel ---------------------- */
+
+function renderPriceChart() {
+  const host = $("price-chart");
+  const d = state.data, bars = state.bars;
+  if (!d) return;
+
+  if (!bars || !bars.available) {
+    host.innerHTML = `<div class="nodata">Price history unavailable${
+      bars?.reason ? `<br><span class="small">${esc(bars.reason)}</span>` : ""
+    }<br><span class="small">Every other panel is unaffected — the exposure surface does not need bars.</span></div>`;
+    $("price-ohlc").textContent = "";
+    return;
+  }
+
+  const n = bars.close.length;
+  const W = Math.max(host.clientWidth || 700, 360);
+  const H = 380;
+  const padL = 8, padR = 62, padT = 8, padB = 20;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+
+  const showLevels = $("chk-levels").checked;
+  const showVwap = $("chk-vwap").checked;
+
+  // Level annotations. All are prices, so they share the price axis
+  // legitimately — unlike an exposure series, which would not.
+  const levels = !showLevels ? [] : [
+    ["call_wall", "Call Wall", "var(--series-call)", false],
+    ["put_wall", "Put Wall", "var(--series-put)", false],
+    ["gamma_flip", "Gamma Flip", "var(--warning)", true],
+    ["max_pain", "Max Pain", "var(--text-muted)", false],
+  ].map(([k, label, colour, dashed]) => ({ label, colour, dashed, price: d.levels[k]?.strike }))
+   .filter((l) => l.price !== null && l.price !== undefined);
+
+  // y-domain from the bars, expanded to include levels — but capped, so one
+  // distant level cannot flatten the candles into a line.
+  let lo = Math.min(...bars.low), hi = Math.max(...bars.high);
+  const span = Math.max(hi - lo, 1e-6);
+  const capLo = lo - span * 0.75, capHi = hi + span * 0.75;
+  levels.forEach((l) => {
+    if (l.price >= capLo && l.price <= capHi) { lo = Math.min(lo, l.price); hi = Math.max(hi, l.price); }
+    else l.offscale = true;
+  });
+  const pad = (hi - lo) * 0.06 || 1;
+  lo -= pad; hi += pad;
+
+  const y = (p) => padT + innerH - ((p - lo) / (hi - lo)) * innerH;
+  const bw = innerW / n;
+  const body = Math.max(1, Math.min(bw * 0.62, 9));
+  const x = (i) => padL + i * bw + bw / 2;
+
+  const parts = [];
+
+  // Horizontal price gridlines. The right gutter is shared with the level
+  // tags and the last-price tag, so an axis price is drawn only where none
+  // of those already occupies the row.
+  const occupied = levels.filter((l) => !l.offscale).map((l) => y(l.price));
+  occupied.push(y(bars.close[n - 1]));
+  const gridN = 5;
+  for (let g = 0; g <= gridN; g++) {
+    const p = lo + ((hi - lo) * g) / gridN;
+    const gy = y(p);
+    parts.push(`<line class="grid-line" x1="${padL}" x2="${padL + innerW}" y1="${gy}" y2="${gy}"/>`);
+    if (!occupied.some((o) => Math.abs(o - gy) < 13)) {
+      parts.push(`<text class="axis-label" x="${padL + innerW + 5}" y="${gy + 3}">${priceFmt(Math.round(p * 100) / 100)}</text>`);
+    }
+  }
+
+  // candles
+  for (let i = 0; i < n; i++) {
+    const up = bars.close[i] >= bars.open[i];
+    const cls = up ? "candle-up" : "candle-dn";
+    const cx = x(i);
+    parts.push(`<line class="wick ${cls}" x1="${cx}" x2="${cx}" y1="${y(bars.high[i])}" y2="${y(bars.low[i])}"/>`);
+    const yo = y(bars.open[i]), yc = y(bars.close[i]);
+    const top = Math.min(yo, yc), h = Math.max(Math.abs(yc - yo), 0.8);
+    parts.push(`<rect class="${cls}" x="${cx - body / 2}" y="${top}" width="${body}" height="${h}"/>`);
+  }
+
+  if (showVwap && bars.vwap) {
+    const pts = bars.vwap.map((v, i) => `${x(i)},${y(v)}`).join(" ");
+    parts.push(`<polyline class="vwap-line" points="${pts}"/>`);
+    levels.push({ label: "VWAP", colour: "var(--series-violet)", price: bars.vwap[n - 1] });
+  }
+
+  // Level tags share the right gutter with the axis prices and each other,
+  // so they are laid out rather than drawn where the line falls: name and
+  // price on ONE line, then pushed apart vertically on collision.
+  const TAG_H = 11;
+  let lastTagY = -Infinity;
+  levels.filter((l) => !l.offscale).map((l) => ({ ...l, y: y(l.price) }))
+    .sort((a, b) => a.y - b.y)
+    .forEach((t) => {
+      if (t.label !== "VWAP") {
+        parts.push(`<line class="level-line${t.dashed ? " flip" : ""}" stroke="${t.colour}" x1="${padL}" x2="${padL + innerW}" y1="${t.y}" y2="${t.y}"/>`);
+      }
+      const ty = Math.max(t.y - 3, lastTagY + TAG_H);
+      lastTagY = ty;
+      parts.push(`<text class="level-tag" fill="${t.colour}" x="${padL + innerW + 5}" y="${ty}">${t.label} ${priceFmt(t.price)}</text>`);
+    });
+
+  // last price tag on the right axis
+  const lastY = y(bars.close[n - 1]);
+  parts.push(`<g class="last-tag"><rect x="${padL + innerW + 1}" y="${lastY - 7}" width="54" height="14" rx="3"/>
+    <text x="${padL + innerW + 5}" y="${lastY + 3.5}">${bars.close[n - 1].toFixed(2)}</text></g>`);
+
+  // time axis
+  const every = Math.max(1, Math.floor(n / Math.max(4, Math.floor(W / 95))));
+  for (let i = 0; i < n; i += every) {
+    const t = String(bars.time[i]).slice(11, 16);
+    parts.push(`<text class="axis-label" x="${x(i)}" y="${H - 5}" text-anchor="middle">${t}</text>`);
+  }
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Price with exposure levels">${parts.join("")}</svg>`;
+
+  const i = n - 1;
+  $("price-ohlc").textContent =
+    `O ${bars.open[i].toFixed(2)}  H ${bars.high[i].toFixed(2)}  L ${bars.low[i].toFixed(2)}  C ${bars.close[i].toFixed(2)}` +
+    (bars.synthetic ? "   · synthetic" : "");
+
+  const off = levels.filter((l) => l.offscale);
+  if (off.length) {
+    host.insertAdjacentHTML("beforeend",
+      `<div class="muted small" style="margin-top:4px">Off-scale, not drawn: ${off.map((l) => `${l.label} ${priceFmt(l.price)}`).join(" · ")}</div>`);
+  }
+}
+
+/* ------------------- horizontal tabbed exposure by strike --------------- */
+
+function renderExpTabs() {
+  $("exp-tabs").innerHTML = Object.entries(METRICS)
+    .map(([k, m]) => `<button data-tab="${k}" aria-selected="${state.expTab === k}">${m.label}</button>`)
+    .join("");
+  $("exp-tabs").querySelectorAll("button").forEach((b) =>
+    b.addEventListener("click", () => {
+      state.expTab = b.dataset.tab;
+      renderExpTabs();
+      renderExposureH(state.data);
+    })
+  );
+}
+
+/** The vertical small multiples rotated: same arrays, same axisTicks, same
+ *  colours, same rounded-end bars — only the coordinate mapping differs. */
+function renderExposureH(d) {
+  if (!d) return;
+  const host = $("exp-h-chart");
+  const spec = METRICS[state.expTab];
+  const idx = visibleIndices(d, 0.06);
+  const strikes = idx.map((i) => d.strikes[i]);
+  const s = seriesFor(d, spec, idx);
+
+  const W = Math.max(host.clientWidth || 300, 220);
+  const H = Math.max(strikes.length * 9, 300);
+  const padL = 44, padR = 10, padT = 16, padB = 20;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+
+  const isSigned = !s.grouped;
+  const { bound, ticks } = axisTicks(s.maxAbs, isSigned);
+  const zeroX = isSigned ? padL + innerW / 2 : padL;
+  const scale = (isSigned ? innerW / 2 : innerW) / bound;
+
+  const band = innerH / strikes.length;
+  const thick = Math.max(1.5, band - 2);            // 2px surface gap
+  const yOf = (i) => padT + (strikes.length - 1 - i) * band + (band - thick) / 2;
+
+  const parts = [];
+
+  ticks.forEach((t) => {
+    const tx = zeroX + t * scale;
+    parts.push(`<line class="${Math.abs(t) < 1e-9 ? "zero-line" : "grid-line"}" x1="${tx}" x2="${tx}" y1="${padT}" y2="${padT + innerH}"/>`);
+    parts.push(`<text class="axis-label" x="${tx}" y="${padT - 5}" text-anchor="middle">${spec.fmt(t)}</text>`);
+  });
+
+  if (s.grouped) {
+    const half = thick / 2;
+    s.a.forEach((v, i) => parts.push(`<path class="bar" fill="var(--series-call)" d="${barPathH(zeroX, yOf(i), v * scale, Math.max(half - 0.5, 0.8), true)}"/>`));
+    s.b.forEach((v, i) => parts.push(`<path class="bar" fill="var(--series-put)" d="${barPathH(zeroX, yOf(i) + half + 0.5, v * scale, Math.max(half - 0.5, 0.8), true)}"/>`));
+  } else {
+    s.v.forEach((v, i) => {
+      const len = Math.abs(v) * scale, right = v >= 0;
+      parts.push(`<path class="bar" fill="${right ? "var(--pos)" : "var(--neg)"}" d="${barPathH(zeroX, yOf(i), len, thick, right)}"/>`);
+    });
+  }
+
+  // strike labels, thinned to fit
+  const step = Math.max(1, Math.ceil(strikes.length / Math.floor(innerH / 22)));
+  strikes.forEach((k, i) => {
+    if (i % step) return;
+    parts.push(`<text class="axis-label" x="${padL - 6}" y="${yOf(i) + thick / 2 + 3}" text-anchor="end">${priceFmt(k)}</text>`);
+  });
+
+  // spot and flip as horizontal reference lines across the strike axis
+  const lo = strikes[0], hi = strikes[strikes.length - 1];
+  const yAt = (p) => {
+    const frac = (p - lo) / Math.max(hi - lo, 1e-9);
+    return padT + innerH - frac * (innerH - band) - band / 2;
+  };
+  [[d.spot, "var(--text-primary)", `Spot ${priceFmt(d.spot)}`, false],
+   [d.levels.gamma_flip?.strike, "var(--warning)", "Flip", true]].forEach(([p, colour, label, dashed]) => {
+    if (p === null || p === undefined || p < lo || p > hi) return;
+    parts.push(`<line class="level-line${dashed ? " flip" : ""}" stroke="${colour}" x1="${padL}" x2="${W - padR}" y1="${yAt(p)}" y2="${yAt(p)}"/>`);
+    parts.push(`<text class="level-tag" fill="${colour}" x="${W - padR}" y="${yAt(p) - 3}" text-anchor="end">${label}</text>`);
+  });
+
+  host.innerHTML =
+    `<div class="chart-head"><span class="chart-title">${spec.title}</span><span class="legend">${legendFor(spec)}</span></div>` +
+    `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${spec.title} by strike">${parts.join("")}</svg>` +
+    `<div class="muted small">${strikes.length} of ${d.strikes.length} strikes${strikes.length < d.strikes.length ? " (±6%) — full range in table view" : ""}</div>`;
+}
+
+/* --------------------------- order flow & bias -------------------------- */
+
+function renderOrderFlow(d) {
+  const cv = d.totals.call_volume || 0, pv = d.totals.put_volume || 0;
+  $("sv-fill").style.width = `${(cv / Math.max(cv + pv, 1)) * 100}%`;
+  $("sv-calls").textContent = count(cv);
+  $("sv-puts").textContent = count(pv);
+  $("sv-note").textContent =
+    `Vol P/C ${px(d.totals.pc_volume_ratio, 2)} — cumulative session volume from the chain snapshot, not a classified tape.`;
+
+  const rows = [];
+  const push = (dir, name, val) =>
+    rows.push(`<div class="bias-row"><span class="ind ${dir}">${dir === "up" ? "▲" : dir === "dn" ? "▼" : "—"}</span>
+      <span class="nm">${name}</span><span class="val">${val}</span></div>`);
+
+  const r = d.regime || {};
+  push(r.gamma_sign === "long" ? "up" : "dn", "Gamma regime",
+       `${r.label ? r.label.toLowerCase() : "—"} · ${r.position || ""}`);
+
+  const b = state.bars;
+  if (b && b.available && b.close.length > 1) {
+    const first = b.close[0], last = b.close[b.close.length - 1];
+    const chg = ((last - first) / first) * 100;
+    push(chg > 0.02 ? "up" : chg < -0.02 ? "dn" : "flat", "Momentum", `${signed(chg, 2)}% over session`);
+    const vw = b.vwap[b.vwap.length - 1];
+    push(last > vw ? "up" : "dn", "Price vs VWAP", `${signed(last - vw, 2)} vs ${priceFmt(Math.round(vw * 100) / 100)}`);
+  } else {
+    push("flat", "Momentum", "needs price history");
+    push("flat", "Price vs VWAP", "needs price history");
+  }
+
+  const vr = d.totals.pc_volume_ratio;
+  push(vr < 0.95 ? "up" : vr > 1.05 ? "dn" : "flat", "Volume flow",
+       vr < 0.95 ? "call-skewed" : vr > 1.05 ? "put-skewed" : "balanced");
+
+  const or = d.totals.pc_oi_ratio;
+  push(or < 0.95 ? "up" : or > 1.05 ? "dn" : "flat", "Positioning", `OI P/C ${px(or, 2)} · prior close`);
+
+  const cw = d.levels.call_wall, pw = d.levels.put_wall;
+  if (cw?.strike && pw?.strike) {
+    const mid = (cw.strike + pw.strike) / 2;
+    push(d.spot > mid ? "up" : "dn", "Within walls",
+         `${priceFmt(pw.strike)} – ${priceFmt(cw.strike)}`);
+  }
+
+  $("bias-rows").innerHTML = rows.join("");
+  renderUnavailable("unavailable-terminal", d, ["market_internals", "oi_flow", "speed_engine"]);
+}
+
+/* ═══════════════════════════ COLUMNS VIEW ════════════════════════════ */
+
+const EXPOSURE_TILES = [
+  ["gex", "GEX", "$ delta per +1% spot"], ["dex", "DEX", "$ delta"],
+  ["cex", "CEX", "$ delta per day"], ["vanx", "VANX", "$ delta per +1 vol pt"],
+  ["vex", "VEX", "$ per +1 vol pt"], ["thex", "THEX", "$ per day"],
+];
+
+function renderColumns(d) {
+  renderBias(d);
+  renderSpot(d);
+  renderRadar(d);
+  renderChartsV(d);
+}
+
+function renderBias(d) {
+  const r = d.regime || {};
+  $("regime").className = `regime ${(r.label || "").toLowerCase()}`;
+  $("regime-label").textContent = r.label || "—";
+  $("regime-gloss").textContent = r.gloss || "";
+  // The reference dashboards' equivalent labels are proprietary and
+  // undocumented. This one is ours, and says so on screen.
+  $("regime-src").textContent = r.derivation ? `${r.derivation} · ${r.gamma_sign} gamma, ${r.position}` : "";
+
+  $("exposure-tiles").innerHTML = EXPOSURE_TILES.map(([key, label, unit]) => {
+    const v = d.totals[key];
+    return `<div class="tile" title="${unit}"><div class="k">${label}</div>
+      <div class="v ${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${money(v)}</div></div>`;
+  }).join("");
+
+  const z = d.diagnostics.zero_dte_gex_share_pct;
+  $("t-zerodte").textContent = d.diagnostics.zero_dte_expired ? "0DTE expired"
+    : z === null || z === undefined ? "—" : `${z.toFixed(1)}%`;
+  $("t-pcoi").textContent = px(d.totals.pc_oi_ratio, 3);
+  $("t-pcvol").textContent = px(d.totals.pc_volume_ratio, 3);
+
+  const c = d.totals.call_oi || 0, p = d.totals.put_oi || 0;
+  $("pcbar-fill").style.width = `${(c / Math.max(c + p, 1)) * 100}%`;
+  $("pc-calls").textContent = count(c);
+  $("pc-puts").textContent = count(p);
+
+  renderUnavailable("unavailable-bias", d, ["oi_flow", "volume_bias", "kinetics", "dealer_regime"]);
+}
+
+function renderUnavailable(hostId, d, keys) {
+  const host = $(hostId);
+  if (!host) return;
+  host.className = "tiles wide";
+  host.innerHTML = keys.filter((k) => d.unavailable?.[k]).map((k) =>
+    `<div class="tile unavailable"><div class="v">—</div><div class="body">
+      <div class="k">${k.replace(/_/g, " ")}</div>
+      <div class="why">${esc(d.unavailable[k])}</div></div></div>`).join("");
+}
+
+const GEX_LEVEL_ROWS = [
+  ["max_pos_gex", "Max +GEX", "var(--pos)"], ["call_wall", "Call wall", "var(--series-call)"],
+  ["gamma_flip", "Flip", "var(--warning)"], ["put_wall", "Put wall", "var(--series-put)"],
+  ["max_neg_gex", "Max −GEX", "var(--neg)"],
+];
+
+function renderSpot(d) {
+  $("spot").textContent = priceFmt(d.spot);
+  const im = d.instrument_meta || {};
+  $("spot-meta").innerHTML =
+    `${esc(im.label || d.instrument)}<br>${d.diagnostics.expiries_in_window} expiries · ${d.diagnostics.expiry_window}<br>${d.diagnostics.pricing_model}`;
+
+  $("gexlevels-body").innerHTML = GEX_LEVEL_ROWS.map(([key, name, colour]) => {
+    const lv = d.levels[key];
+    if (!lv || lv.strike === null) {
+      return `<tr><td><span class="lv"><span class="swatch" style="background:${colour}"></span>${name}</span></td>
+              <td class="num muted" colspan="3">none in range</td></tr>`;
+    }
+    const cls = lv.distance > 0 ? "pos" : lv.distance < 0 ? "neg" : "";
+    return `<tr><td><span class="lv"><span class="swatch" style="background:${colour}"></span>${name}</span></td>
+      <td class="num muted">${lv.value === null ? "" : money(lv.value)}</td>
+      <td class="num">${priceFmt(lv.strike)}</td>
+      <td class="num ${cls}">${signed(lv.distance)}</td></tr>`;
+  }).join("");
+
+  $("t-maxpain").textContent = priceFmt(d.levels.max_pain?.strike);
+  $("maxpain-exp").textContent = d.diagnostics.max_pain_expiry ? `· ${String(d.diagnostics.max_pain_expiry).slice(0, 10)}` : "";
+
+  const cw = d.levels.call_wall, pw = d.levels.put_wall;
+  $("t-resist").textContent = signed(cw?.distance);
+  $("t-resist-sub").textContent = cw ? `call wall ${priceFmt(cw.strike)} · ${money(cw.value)}` : "";
+  $("t-support").textContent = signed(pw?.distance);
+  $("t-support-sub").textContent = pw ? `put wall ${priceFmt(pw.strike)} · ${money(pw.value)}` : "";
+  $("t-poc").textContent = priceFmt(d.levels.volume_poc?.strike);
+}
+
+const RADAR_LEVELS = [
+  ["max_pos_gex", "Max +GEX"], ["call_wall", "Call wall"], ["gamma_flip", "Flip"],
+  ["volume_poc", "Volume POC"], ["max_pain", "Max pain"], ["put_wall", "Put wall"],
+  ["max_neg_gex", "Max −GEX"],
+];
+
+function renderRadar(d) {
+  const rows = RADAR_LEVELS
+    .filter(([k]) => d.levels[k] && d.levels[k].strike !== null)
+    .map(([k, name]) => ({ name, price: d.levels[k].strike, dist: d.levels[k].distance, spot: false }));
+  rows.push({ name: "Spot", price: d.spot, dist: 0, spot: true });
+  rows.sort((a, b) => b.price - a.price);
+
+  $("radar").innerHTML = rows.map((r) => {
+    if (r.spot) return `<div class="radar-row is-spot"><span class="nm">Spot</span><span class="px">${priceFmt(r.price)}</span></div>`;
+    return `<div class="radar-row ${r.price > d.spot ? "above" : "below"}">
+      <span class="nm">${r.name}</span><span class="px">${priceFmt(r.price)}</span>
+      <span class="dl ${r.dist > 0 ? "pos" : "neg"}">${signed(r.dist)}</span></div>`;
+  }).join("");
+
+  renderUnavailable("unavailable-zone", d, ["zone_state", "speed_engine", "intraday_oi_change", "king_maker"]);
+}
+
+/* Vertical small multiples — the columns view's signal chart. */
+const V_SPECS = ["gex", "dex", "vanx", "volume"];
+const AXIS_BAND = 20, PLOT_H = 86;
+
+function renderChartsV(d) {
   const host = $("charts");
-  // Rebuilding the SVGs drops the hover band with them. Under SSE that would
-  // leave a tooltip pinned open showing values from a tick ago.
   clearHover();
   host.innerHTML = "";
 
   const idx = visibleIndices(d);
   const strikes = idx.map((i) => d.strikes[i]);
   const width = Math.max(host.clientWidth || 420, 300);
-  // The chart column is narrow; a fixed 62px gutter would eat a fifth of it.
-  const padL = Math.max(40, Math.min(62, width * 0.13));
-  const padR = 8;
+  const padL = Math.max(40, Math.min(62, width * 0.13)), padR = 8;
   const innerW = width - padL - padR;
   const band = innerW / strikes.length;
-  const barW = Math.max(1.2, band - 2); // 2px surface gap between bars
+  const barW = Math.max(1.2, band - 2);
   const xOf = (i) => padL + i * band + (band - barW) / 2;
 
   $("chart-legend").innerHTML = `<span class="item muted">${
     strikes.length < d.strikes.length
       ? `${strikes.length} of ${d.strikes.length} strikes (±5%) — full range in table view`
-      : `all ${strikes.length} strikes`
-  }</span>`;
+      : `all ${strikes.length} strikes`}</span>`;
 
-  CHART_SPECS.forEach((spec, si) => {
-    const isLast = si === CHART_SPECS.length - 1;
+  V_SPECS.forEach((key, si) => {
+    const spec = METRICS[key];
+    const isLast = si === V_SPECS.length - 1;
     const h = PLOT_H + (isLast ? AXIS_BAND : 0);
-    const isSigned = spec.kind !== "grouped";
-
-    let series, maxAbs;
-    if (isSigned) {
-      series = idx.map((i) => d[spec.key][i]);
-      maxAbs = Math.max(...series.map(Math.abs), 1);
-    } else {
-      const c = idx.map((i) => d.call_volume[i]), p = idx.map((i) => d.put_volume[i]);
-      series = { c, p };
-      maxAbs = Math.max(...c, ...p, 1);
-    }
+    const s = seriesFor(d, spec, idx);
+    const isSigned = !s.grouped;
 
     const yTop = 6, yBot = PLOT_H - 6;
     const zeroY = isSigned ? (yTop + yBot) / 2 : yBot;
-    const { bound, ticks } = axisTicks(maxAbs, isSigned);
+    const { bound, ticks } = axisTicks(s.maxAbs, isSigned);
     const scale = (isSigned ? yBot - zeroY : yBot - yTop) / bound;
 
     const parts = [];
     ticks.forEach((t) => {
-      const y = zeroY - t * scale;
-      if (y < yTop - 1 || y > yBot + 1) return;
-      parts.push(`<line class="${Math.abs(t) < 1e-9 ? "zero-line" : "grid-line"}" x1="${padL}" x2="${width - padR}" y1="${y}" y2="${y}"/>`);
-      parts.push(`<text class="axis-label" x="${padL - 6}" y="${y + 3}" text-anchor="end">${spec.fmt(t)}</text>`);
+      const yy = zeroY - t * scale;
+      if (yy < yTop - 1 || yy > yBot + 1) return;
+      parts.push(`<line class="${Math.abs(t) < 1e-9 ? "zero-line" : "grid-line"}" x1="${padL}" x2="${width - padR}" y1="${yy}" y2="${yy}"/>`);
+      parts.push(`<text class="axis-label" x="${padL - 6}" y="${yy + 3}" text-anchor="end">${spec.fmt(t)}</text>`);
     });
 
     if (isSigned) {
-      series.forEach((v, i) => {
+      s.v.forEach((v, i) => {
         const hgt = Math.abs(v) * scale, up = v >= 0;
-        parts.push(`<path class="bar" fill="${up ? "var(--pos)" : "var(--neg)"}" d="${barPath(xOf(i), up ? zeroY - hgt : zeroY, barW, hgt, up)}"/>`);
+        parts.push(`<path class="bar" fill="${up ? "var(--pos)" : "var(--neg)"}" d="${barPathV(xOf(i), up ? zeroY - hgt : zeroY, barW, hgt, up)}"/>`);
       });
     } else {
       const half = barW / 2;
-      series.c.forEach((v, i) => {
-        const hgt = v * scale;
-        parts.push(`<path class="bar" fill="var(--series-call)" d="${barPath(xOf(i), zeroY - hgt, Math.max(half - 0.5, 0.8), hgt, true)}"/>`);
-      });
-      series.p.forEach((v, i) => {
-        const hgt = v * scale;
-        parts.push(`<path class="bar" fill="var(--series-put)" d="${barPath(xOf(i) + half + 0.5, zeroY - hgt, Math.max(half - 0.5, 0.8), hgt, true)}"/>`);
-      });
+      s.a.forEach((v, i) => parts.push(`<path class="bar" fill="var(--series-call)" d="${barPathV(xOf(i), zeroY - v * scale, Math.max(half - 0.5, 0.8), v * scale, true)}"/>`));
+      s.b.forEach((v, i) => parts.push(`<path class="bar" fill="var(--series-put)" d="${barPathV(xOf(i) + half + 0.5, zeroY - v * scale, Math.max(half - 0.5, 0.8), v * scale, true)}"/>`));
     }
 
-    // Level markers — solid hairlines, labelled on the first chart only.
     const lo = strikes[0], hi = strikes[strikes.length - 1];
     const placed = [
       [d.spot, "var(--text-primary)", "SPOT"],
       [d.levels.gamma_flip?.strike, "var(--warning)", "FLIP"],
       [d.levels.call_wall?.strike, "var(--series-call)", "CW"],
       [d.levels.put_wall?.strike, "var(--series-put)", "PW"],
-    ]
-      .filter(([v]) => v !== null && v !== undefined && v >= lo && v <= hi)
-      .map(([value, colour, label]) => ({
-        colour, label,
-        x: padL + ((value - lo) / Math.max(hi - lo, 1e-9)) * (innerW - band) + band / 2,
-      }))
-      .sort((a, b) => a.x - b.x);
+    ].filter(([v]) => v !== null && v !== undefined && v >= lo && v <= hi)
+     .map(([value, colour, label]) => ({ colour, label, x: padL + ((value - lo) / Math.max(hi - lo, 1e-9)) * (innerW - band) + band / 2 }))
+     .sort((a, b) => a.x - b.x);
 
-    // Stack onto a new row when the previous label's rendered extent would be
-    // overlapped — comparing line positions alone is not enough.
     let lastEnd = -Infinity, row = 0;
     placed.forEach((m) => {
       parts.push(`<line class="marker-line" stroke="${m.colour}" x1="${m.x}" x2="${m.x}" y1="${yTop}" y2="${yBot}"/>`);
       if (si !== 0) return;
-      const atEdge = m.x > padL + innerW - 32;
-      const w = m.label.length * 6 + 5;
+      const atEdge = m.x > padL + innerW - 32, w = m.label.length * 6 + 5;
       const startX = atEdge ? m.x - w : m.x;
       row = startX < lastEnd ? row + 1 : 0;
       lastEnd = startX + w;
-      parts.push(
-        `<text class="marker-label" fill="${m.colour}" x="${m.x + (atEdge ? -3 : 3)}" y="${yTop + 8 + row * 9}" text-anchor="${atEdge ? "end" : "start"}">${m.label}</text>`
-      );
+      parts.push(`<text class="marker-label" fill="${m.colour}" x="${m.x + (atEdge ? -3 : 3)}" y="${yTop + 8 + row * 9}" text-anchor="${atEdge ? "end" : "start"}">${m.label}</text>`);
     });
 
     if (isLast) {
@@ -458,16 +741,10 @@ function renderCharts(d) {
     parts.push(`<rect class="hit" x="${padL}" y="${yTop}" width="${innerW}" height="${yBot - yTop}"/>`);
     parts.push(`<rect class="hover-band" x="0" y="${yTop}" width="0" height="${yBot - yTop}" data-hoverband/>`);
 
-    const legend = isSigned
-      ? `<span class="item"><span class="swatch" style="background:var(--pos)"></span>+</span>
-         <span class="item"><span class="swatch" style="background:var(--neg)"></span>−</span>`
-      : `<span class="item"><span class="swatch" style="background:var(--series-call)"></span>calls</span>
-         <span class="item"><span class="swatch" style="background:var(--series-put)"></span>puts</span>`;
-
     const block = document.createElement("div");
     block.className = "chart-block";
-    block.innerHTML = `
-      <div class="chart-head"><span class="chart-title">${spec.title}</span><span class="legend">${legend}</span></div>
+    block.innerHTML = `<div class="chart-head"><span class="chart-title">${spec.title}</span>
+      <span class="legend">${legendFor(spec)}</span></div>
       <svg viewBox="0 0 ${width} ${h}" height="${h}" role="img" aria-label="${spec.title} by strike">${parts.join("")}</svg>`;
 
     const svg = block.querySelector("svg");
@@ -479,24 +756,18 @@ function renderCharts(d) {
 
 function onHover(ev, svg, width, strikes, idx, left, band) {
   const rect = svg.getBoundingClientRect();
-  const xInSvg = ((ev.clientX - rect.left) / rect.width) * width;
-  const i = Math.floor((xInSvg - left) / band);
+  const i = Math.floor((((ev.clientX - rect.left) / rect.width) * width - left) / band);
   if (i < 0 || i >= strikes.length) return clearHover();
-
   document.querySelectorAll("[data-hoverband]").forEach((b) => {
     b.setAttribute("x", left + i * band);
     b.setAttribute("width", band);
   });
-
-  const d = state.data, j = idx[i];
-  const tt = $("tooltip");
-  tt.innerHTML =
-    `<div class="tt-strike">${priceFmt(strikes[i])}</div>` +
-    [
-      ["GEX", money(d.gex[j])], ["DEX", money(d.dex[j])], ["VANX", money(d.vanx[j])],
-      ["Call OI", count(d.call_oi[j])], ["Put OI", count(d.put_oi[j])],
-      ["Call vol", count(d.call_volume[j])], ["Put vol", count(d.put_volume[j])],
-    ].map(([k, v]) => `<div class="tt-row"><span>${k}</span><span>${v}</span></div>`).join("");
+  const d = state.data, j = idx[i], tt = $("tooltip");
+  tt.innerHTML = `<div class="tt-strike">${priceFmt(strikes[i])}</div>` +
+    [["GEX", money(d.gex[j])], ["DEX", money(d.dex[j])], ["VANX", money(d.vanx[j])],
+     ["Call OI", count(d.call_oi[j])], ["Put OI", count(d.put_oi[j])],
+     ["Call vol", count(d.call_volume[j])], ["Put vol", count(d.put_volume[j])]]
+      .map(([k, v]) => `<div class="tt-row"><span>${k}</span><span>${v}</span></div>`).join("");
   tt.classList.add("on");
   tt.style.left = `${Math.min(ev.clientX + 14, window.innerWidth - 200)}px`;
   tt.style.top = `${Math.min(ev.clientY + 14, window.innerHeight - 190)}px`;
@@ -516,8 +787,7 @@ function renderTableView(d) {
   const rows = d.strikes.map((k, i) =>
     `<tr><td>${priceFmt(k)}</td><td>${money(d.gex[i])}</td><td>${money(d.dex[i])}</td><td>${money(d.vanx[i])}</td>
      <td>${money(d.cex[i])}</td><td>${count(d.call_oi[i])}</td><td>${count(d.put_oi[i])}</td>
-     <td>${count(d.call_volume[i])}</td><td>${count(d.put_volume[i])}</td></tr>`
-  );
+     <td>${count(d.call_volume[i])}</td><td>${count(d.put_volume[i])}</td></tr>`);
   $("tableview").innerHTML =
     `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`;
 }
@@ -540,16 +810,48 @@ function renderDiagnostics(d) {
     ["OI as of", g.oi_asof || "unknown"],
     ["Max pain expiry", g.max_pain_expiry ? String(g.max_pain_expiry).slice(0, 10) : "—"],
     ["Chain fetched", d.from_cache ? `cache (${d.cache_age_hours}h old)${d.stale ? " — STALE" : ""}` : "live"],
+    ["Price history", state.bars?.available ? `${state.bars.close.length} × ${state.bars.interval_minutes}m` : "unavailable"],
   ];
   if (g.greeks_approximation) items.push(["Approximation", g.greeks_approximation]);
-  $("diag").innerHTML = items.map(([k, v]) => `<div><span>${k}:</span> ${v}</div>`).join("");
+  $("diag").innerHTML = items.map(([k, v]) => `<div><span>${k}:</span> ${esc(v)}</div>`).join("");
+}
+
+/* --------------------------------------------------------- view switch */
+
+function setView(view, { reload = true } = {}) {
+  state.view = view === "columns" ? "columns" : "terminal";
+  localStorage.setItem("gexdash-view", state.view);
+
+  $("view-terminal").hidden = state.view !== "terminal";
+  $("view-columns").hidden = state.view !== "columns";
+  ["terminal", "columns"].forEach((v) =>
+    $(`view-${v}-btn`).setAttribute("aria-selected", String(state.view === v)));
+
+  // A hidden container reports clientWidth 0, so every chart laid out while
+  // the view was hidden has degenerate geometry. Switching must re-render,
+  // not merely unhide.
+  if (reload && state.data) render(state.data);
+  if (state.view === "terminal") {
+    if (!state.bars) loadBars();
+    else renderPriceChart();
+  }
 }
 
 /* --------------------------------------------------------------- events */
 
-["f-symbol", "f-window", "f-sign", "f-flip"].forEach((id) =>
-  $(id).addEventListener("change", () => (state.stream ? startStream() : load()))
-);
+["f-window", "f-sign", "f-flip"].forEach((id) =>
+  $(id).addEventListener("change", () => (state.stream ? startStream() : load())));
+
+$("f-symbol").addEventListener("change", () => {
+  state.bars = null;                     // bars are per-instrument
+  if (state.stream) startStream(); else load();
+  if (state.view === "terminal") loadBars();
+});
+
+["view-terminal-btn", "view-columns-btn"].forEach((id) =>
+  $(id).addEventListener("click", () => setView($(id).dataset.view)));
+
+["chk-levels", "chk-vwap"].forEach((id) => $(id).addEventListener("change", renderPriceChart));
 
 $("btn-table").addEventListener("click", () => {
   state.showTable = !state.showTable;
@@ -565,11 +867,8 @@ $("btn-refresh").addEventListener("click", async () => {
     if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
     notice(`Chain refetched: ${body.contracts} contracts, OI as of ${body.oi_asof}.`);
     await load();
-  } catch (err) {
-    notice(err.message, true);
-  } finally {
-    $("btn-refresh").disabled = false;
-  }
+  } catch (err) { notice(err.message, true); }
+  finally { $("btn-refresh").disabled = false; }
 });
 
 function startStream() {
@@ -578,18 +877,23 @@ function startStream() {
   es.onmessage = (ev) => {
     const body = JSON.parse(ev.data);
     if (body.error) return notice(body.error, true);
-    render(body);
+    render(body);   // dispatches to whichever view is mounted
   };
   es.onerror = () => notice("stream disconnected", true);
   state.stream = es;
   $("btn-live").textContent = "⏸ pause";
   $("badge-live").textContent = "streaming";
   $("badge-live").className = "badge live";
+  // Bars move far more slowly than the exposure surface; refreshing them on
+  // every 2s tick would be waste.
+  clearInterval(state.barTimer);
+  state.barTimer = setInterval(() => state.view === "terminal" && loadBars(), 30_000);
 }
 
 function stopStream() {
   if (state.stream) state.stream.close();
   state.stream = null;
+  clearInterval(state.barTimer);
   $("btn-live").textContent = "▶ start";
   $("badge-live").textContent = "paused";
   $("badge-live").className = "badge";
@@ -604,22 +908,20 @@ $("btn-theme").addEventListener("click", () => {
     : matchMedia("(prefers-color-scheme: dark)").matches;
   root.dataset.theme = isDark ? "light" : "dark";
   localStorage.setItem("gexdash-theme", root.dataset.theme);
-  if (state.data) renderCharts(state.data);
+  if (state.data) render(state.data);
 });
 
-/* Theme resolution order: ?theme= in the URL, then the stored preference,
- * then the OS setting via prefers-color-scheme (no attribute set at all).
- * The URL form makes a specific mode linkable and screenshot-testable. */
-const urlTheme = new URLSearchParams(location.search).get("theme");
-const savedTheme = urlTheme || localStorage.getItem("gexdash-theme");
-if (savedTheme === "dark" || savedTheme === "light") {
-  document.documentElement.dataset.theme = savedTheme;
-}
+/* Theme and view both resolve: URL parameter → stored preference → default.
+ * The URL form makes a specific screen linkable and screenshot-testable. */
+const urlParams = new URLSearchParams(location.search);
+const savedTheme = urlParams.get("theme") || localStorage.getItem("gexdash-theme");
+if (savedTheme === "dark" || savedTheme === "light") document.documentElement.dataset.theme = savedTheme;
 
 let resizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => state.data && renderCharts(state.data), 150);
+  resizeTimer = setTimeout(() => state.data && render(state.data), 150);
 });
 
-loadMeta().then(load).catch((e) => notice(e.message, true));
+setView(urlParams.get("view") || localStorage.getItem("gexdash-view") || "terminal", { reload: false });
+loadMeta().then(() => Promise.all([load(), loadBars()])).catch((e) => notice(e.message, true));

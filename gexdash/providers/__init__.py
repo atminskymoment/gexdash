@@ -9,13 +9,21 @@ from __future__ import annotations
 
 import os
 
-from .base import ChainProvider, NotAuthenticated, ProviderError
+from .base import (
+    ChainProvider,
+    NotAuthenticated,
+    PriceHistoryProvider,
+    PriceHistoryUnavailable,
+    ProviderError,
+)
 from .mock import MockProvider
 
 __all__ = [
     "ChainProvider",
+    "PriceHistoryProvider",
     "ProviderError",
     "NotAuthenticated",
+    "PriceHistoryUnavailable",
     "MockProvider",
     "build_provider",
 ]

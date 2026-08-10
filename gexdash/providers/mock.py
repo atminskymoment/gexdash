@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
+from ..bars import PriceBars, build_bars
 from ..chain import OptionChain, build_chain
 from ..sessions import previous_session
 from ..instruments import ES, SPX, Instrument
@@ -64,6 +65,60 @@ class MockProvider:
         # be 3% on a $776 ETF and invisible on a 29,800 index.
         self._drift = float(np.clip(self._drift + self._rng.normal(0, 4.5e-5), -0.0035, 0.0035))
         return round(base * (1.0 + self._drift), 2)
+
+    def get_price_history(
+        self, instrument: Instrument, *, interval_minutes: int = 1, lookback_hours: float = 7.0
+    ) -> PriceBars:
+        """Synthesize an intraday OHLCV series.
+
+        A seeded GBM walk with intraday volume shaped like a real session (a
+        heavy open, a midday lull, a close ramp) so the candle panel and the
+        VWAP line have something plausible to render. Invented, like the rest
+        of this provider -- the UI banner says so.
+        """
+        base = self._spot_override or DEFAULT_SPOT.get(instrument.key, 100.0)
+        n = max(int(lookback_hours * 60 / max(interval_minutes, 1)), 30)
+        rng = np.random.default_rng(self.seed + 1_000)
+
+        # Per-bar vol scaled off the instrument's ATM level, annualised ->
+        # per-interval, so NDX candles are visibly wider than SPX's.
+        annual = DEFAULT_ATM_VOL.get(instrument.key, 0.115)
+        per_bar = annual / np.sqrt(252 * 390 / max(interval_minutes, 1))
+
+        steps = rng.normal(0.0, per_bar, n)
+        # Mild mean reversion so a long series does not wander off the strike grid.
+        path = np.cumsum(steps) - 0.02 * np.cumsum(np.cumsum(steps)) / max(n, 1)
+        closes = base * np.exp(path - path[-1])  # end the series at ~base
+
+        opens = np.concatenate([[closes[0]], closes[:-1]])
+        wick = np.abs(rng.normal(0.0, per_bar * 0.7, n)) * closes
+        highs = np.maximum(opens, closes) + wick
+        lows = np.minimum(opens, closes) - wick
+
+        # U-shaped session volume: busy open and close, quiet midday.
+        t = np.linspace(0, 1, n)
+        shape = 0.4 + 1.6 * (1 - np.sin(np.pi * t)) ** 2 + 0.25
+        volume = shape * rng.uniform(0.6, 1.4, n) * 90_000
+
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        times = [now - timedelta(minutes=interval_minutes * (n - 1 - i)) for i in range(n)]
+
+        return build_bars(
+            instrument,
+            [
+                {
+                    "time": times[i],
+                    "open": float(opens[i]),
+                    "high": float(highs[i]),
+                    "low": float(lows[i]),
+                    "close": float(closes[i]),
+                    "volume": float(int(volume[i])),
+                }
+                for i in range(n)
+            ],
+            interval_minutes=interval_minutes,
+            meta={"synthetic": True, "seed": self.seed},
+        )
 
     def get_chain(self, instrument: Instrument, *, max_dte: float | None = None) -> OptionChain:
         rng = np.random.default_rng(self.seed)

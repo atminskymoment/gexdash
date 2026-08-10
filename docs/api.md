@@ -9,6 +9,7 @@ Base URL: `http://127.0.0.1:8420`. Interactive OpenAPI docs are served at
 | `GET` | `/api/exposure` | Full exposure surface, levels, regime, diagnostics |
 | `GET` | `/api/spot` | Current underlying price |
 | `GET` | `/api/stream` | SSE — the surface re-priced on each spot tick |
+| `GET` | `/api/history` | Intraday OHLCV bars + VWAP (optional capability) |
 | `POST` | `/api/refresh` | Force a chain pull, bypassing the cache |
 | `GET` | `/api/meta` | Instruments, families, valid parameter values, session |
 | `GET` | `/api/docs` | OpenAPI / Swagger UI |
@@ -162,14 +163,54 @@ last good snapshot is served with `"stale": true` rather than a 502. A
 few-hours-old OI surface is still usable; a failed request is not. The UI
 flags it in the header strip and provenance panel.
 
+## `GET /api/history`
+
+Intraday candles for the terminal view's price panel. A **separate** endpoint
+from `/api/exposure` on purpose: bars move on a different cadence, and
+doubling the SSE payload every 2 seconds to redraw candles that shifted by one
+bar would be waste. The client refreshes them on a 30-second timer.
+
+```bash
+curl "http://127.0.0.1:8420/api/history?symbol=SPX&interval_minutes=1&lookback_hours=7"
+```
+
+| Parameter | Default | Range |
+|---|---|---|
+| `symbol` | `SPX` | any instrument |
+| `interval_minutes` | `1` | 1–60 (Schwab snaps to 1/5/10/15/30) |
+| `lookback_hours` | `7.0` | 0–48 |
+
+```jsonc
+{"available": true, "symbol": "SPX", "interval_minutes": 1,
+ "time": ["2026-08-09T19:10:00", ...],
+ "open": [...], "high": [...], "low": [...], "close": [...], "volume": [...],
+ "vwap": [...],                       // running session VWAP, volume-weighted
+ "session_low": 7722.4, "session_high": 7787.6, "synthetic": true}
+```
+
+**This capability is optional**, and unavailability is a `200`, not an error:
+
+```jsonc
+{"available": false, "symbol": "ES",
+ "reason": "price history for /ES is unverified against Schwab — ..."}
+```
+
+The dashboard is fully usable without bars: the exposure surface does not need
+them, so the UI renders the reason where the chart would go rather than an
+empty plot that reads as a loading state. `404` is still returned for an
+unknown `symbol`.
+
 ## Browser URL parameters
 
-The dashboard itself accepts `?symbol=` and `?theme=` so a specific view is
-linkable:
+The dashboard accepts `?symbol=`, `?view=` and `?theme=`, so a specific screen
+is linkable:
 
 ```
-http://127.0.0.1:8420/?symbol=QQQ&theme=dark
+http://127.0.0.1:8420/?symbol=QQQ&view=terminal&theme=dark
 ```
 
-`theme` resolves as: URL parameter → stored preference → OS
-`prefers-color-scheme`.
+| Parameter | Values | Resolution order |
+|---|---|---|
+| `symbol` | any instrument key | URL → `SPX` |
+| `view` | `terminal` `columns` | URL → stored preference → `terminal` |
+| `theme` | `light` `dark` | URL → stored preference → OS `prefers-color-scheme` |

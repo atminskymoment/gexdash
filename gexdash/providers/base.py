@@ -15,13 +15,18 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from ..bars import PriceBars
 from ..chain import OptionChain
 from ..instruments import Instrument
 
 
 @runtime_checkable
 class ChainProvider(Protocol):
-    """Source of option chains and spot prices."""
+    """Source of option chains and spot prices.
+
+    These two methods are mandatory: everything the exposure engine produces
+    depends on them and nothing else.
+    """
 
     name: str
 
@@ -34,9 +39,40 @@ class ChainProvider(Protocol):
         ...
 
 
+@runtime_checkable
+class PriceHistoryProvider(Protocol):
+    """**Optional** capability: intraday OHLCV bars for the price panel.
+
+    Kept separate from :class:`ChainProvider` rather than bolted onto it. The
+    price panel is presentation — the exposure surface does not need bars —
+    and a provider that cannot serve them must be able to say so without
+    failing the whole dashboard. Check with ``isinstance(p, PriceHistoryProvider)``
+    and be ready for :class:`PriceHistoryUnavailable` even when it matches.
+    """
+
+    def get_price_history(
+        self, instrument: Instrument, *, interval_minutes: int = 1, lookback_hours: float = 7.0
+    ) -> PriceBars:
+        """Fetch recent bars, oldest first.
+
+        Raise :class:`PriceHistoryUnavailable` when this provider cannot serve
+        history for this instrument — that is an expected outcome, not a bug.
+        """
+        ...
+
+
 class ProviderError(RuntimeError):
     """Raised when a provider cannot serve a request."""
 
 
 class NotAuthenticated(ProviderError):
     """Raised when credentials are missing or the token chain has expired."""
+
+
+class PriceHistoryUnavailable(ProviderError):
+    """This provider cannot serve bars for this instrument.
+
+    An expected outcome, not a failure: the UI renders the reason where the
+    chart would go. A blank candle panel that reads as "still loading" would
+    be the wrong result on a dashboard whose point is not fabricating data.
+    """

@@ -10,7 +10,11 @@
 
 <header class="top">
   <div class="brand">gexdash</div>
-  <span class="ver">dealer exposure · tier A</span>
+
+  <div class="viewswitch" role="tablist" aria-label="Layout">
+    <button id="view-terminal-btn" role="tab" data-view="terminal">▤ Terminal</button>
+    <button id="view-columns-btn" role="tab" data-view="columns">▥ Columns</button>
+  </div>
 
   <div class="clock">
     <div class="k">Market time</div>
@@ -43,7 +47,7 @@
   <span id="strip-oi">—</span>
 </div>
 
-<!-- One filter row above everything it scopes. -->
+<!-- One filter row above everything it scopes, both views. -->
 <div class="filters">
   <div class="field">
     <label for="f-window">Expiry window</label>
@@ -77,44 +81,80 @@
 
 <div id="notices"></div>
 
-<main id="main" class="columns">
+<!-- ═══════════════════════════ TERMINAL VIEW ═══════════════════════════ -->
+<main id="view-terminal" class="terminal">
 
-  <!-- ─────────────────────────── 1. Market bias ─────────────────────── -->
+  <div class="kpi-row" id="kpi-row"></div>
+
+  <div class="terminal-grid">
+
+    <section class="card price-card">
+      <h2>
+        <span id="price-title">— · 1-minute</span>
+        <span class="ohlc" id="price-ohlc"></span>
+        <span class="grow"></span>
+        <label class="chk"><input type="checkbox" id="chk-levels" checked> GEX levels</label>
+        <label class="chk"><input type="checkbox" id="chk-vwap" checked> VWAP</label>
+      </h2>
+      <div id="price-chart"></div>
+    </section>
+
+    <section class="card">
+      <h2>Exposure by strike</h2>
+      <div class="tabs" id="exp-tabs"></div>
+      <div id="exp-h-chart"></div>
+    </section>
+
+    <section class="card col">
+      <h2>Order flow &amp; bias</h2>
+
+      <div class="k">Session volume</div>
+      <div class="pcbar"><div class="pcbar-fill" id="sv-fill"></div></div>
+      <div class="pcbar-legend">
+        <span><span class="swatch" style="background:var(--series-call)"></span>call <b id="sv-calls">—</b></span>
+        <span><span class="swatch" style="background:var(--series-put)"></span>put <b id="sv-puts">—</b></span>
+      </div>
+      <div class="muted small" id="sv-note"></div>
+
+      <div class="k" style="margin-top:6px">Bias signals</div>
+      <div id="bias-rows"></div>
+
+      <div class="tiles wide" id="unavailable-terminal"></div>
+    </section>
+
+  </div>
+</main>
+
+<!-- ═══════════════════════════ COLUMNS VIEW ════════════════════════════ -->
+<main id="view-columns" class="columns" hidden>
+
   <section class="card col">
     <h2>Market bias</h2>
-
     <div class="regime" id="regime">
       <div class="regime-label" id="regime-label">—</div>
       <div class="regime-gloss" id="regime-gloss"></div>
       <div class="regime-src" id="regime-src"></div>
     </div>
-
     <div class="tiles" id="exposure-tiles"></div>
-
     <div class="subcard">
       <div class="k">GEX concentration</div>
       <div class="big" id="t-zerodte">—</div>
       <div class="muted" id="t-zerodte-sub">share of gross gamma expiring today</div>
     </div>
-
     <div class="tiles two">
       <div class="tile"><div class="k">P/C open interest</div><div class="v" id="t-pcoi">—</div></div>
       <div class="tile"><div class="k">P/C volume</div><div class="v" id="t-pcvol">—</div></div>
     </div>
-
     <div class="pcbar"><div class="pcbar-fill" id="pcbar-fill"></div></div>
     <div class="pcbar-legend">
       <span><span class="swatch" style="background:var(--series-call)"></span>calls <b id="pc-calls">—</b></span>
       <span><span class="swatch" style="background:var(--series-put)"></span>puts <b id="pc-puts">—</b></span>
     </div>
-
     <div class="tiles wide" id="unavailable-bias"></div>
   </section>
 
-  <!-- ────────────────────── 2. Spot and GEX levels ───────────────────── -->
   <section class="card col">
     <h2>Spot &amp; GEX levels</h2>
-
     <div class="spot-row">
       <div>
         <div class="k">Current spot</div>
@@ -122,40 +162,32 @@
       </div>
       <div class="spot-meta" id="spot-meta"></div>
     </div>
-
     <table class="levels gexlevels">
       <thead><tr><th>Level</th><th class="num">Exposure</th><th class="num">Strike</th><th class="num">Dist</th></tr></thead>
       <tbody id="gexlevels-body"></tbody>
     </table>
-
     <div class="subcard maxpain">
       <div class="k">Max pain <span class="muted" id="maxpain-exp"></span></div>
       <div class="big" id="t-maxpain">—</div>
     </div>
-
     <div class="tiles two">
       <div class="tile"><div class="k">To resistance</div><div class="v" id="t-resist">—</div><div class="why" id="t-resist-sub"></div></div>
       <div class="tile"><div class="k">To support</div><div class="v" id="t-support">—</div><div class="why" id="t-support-sub"></div></div>
     </div>
-
     <div class="tiles two">
       <div class="tile"><div class="k">Volume POC</div><div class="v" id="t-poc">—</div></div>
       <div class="tile unavailable"><div class="v">—</div><div class="body"><div class="k">King maker</div><div class="why">proprietary label (tier D)</div></div></div>
     </div>
   </section>
 
-  <!-- ───────────────────────── 3. Zone analysis ──────────────────────── -->
   <section class="card col">
     <h2>Zone analysis</h2>
-
     <div class="k radar-title">Active level radar</div>
     <div class="radar" id="radar"></div>
     <div class="muted radar-note">Levels ordered by price, spot in position.</div>
-
     <div class="tiles wide" id="unavailable-zone"></div>
   </section>
 
-  <!-- ───────────────────────── 4. Signal chart ───────────────────────── -->
   <section class="card col wide-col">
     <h2>Signal chart <span class="legend" id="chart-legend"></span></h2>
     <div class="chart-stack" id="charts"></div>

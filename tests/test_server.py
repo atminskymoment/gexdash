@@ -234,3 +234,64 @@ def test_every_instrument_under_every_dealer_convention(client, symbol, sign):
     # A null flip must be reported as null, never silently as 0.
     flip = d["levels"]["gamma_flip"]["strike"]
     assert flip is None or flip > 0
+
+
+# ----------------------------------------------------------------------
+# Price history endpoint (terminal view)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("symbol", ["SPX", "SPY", "ES", "NDX", "QQQ", "NQ"])
+def test_history_endpoint(client, symbol):
+    r = client.get(f"/api/history?symbol={symbol}")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["available"] is True
+    n = len(d["close"])
+    for k in ("open", "high", "low", "volume", "vwap", "time"):
+        assert len(d[k]) == n
+    assert d["synthetic"] is True
+
+
+def test_history_reports_unavailable_without_erroring(client, tmp_path):
+    """A provider with no bars must degrade, not 502.
+
+    The exposure surface does not need price history, so a missing feed
+    renders a reason where the chart goes rather than failing the request.
+    """
+    class NoBars(MockProvider):
+        get_price_history = None   # drops out of the PriceHistoryProvider check
+
+    set_provider(CachedProvider(NoBars(), ChainStore(tmp_path / "nb.db")))
+    r = client.get("/api/history?symbol=SPX")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["available"] is False
+    assert "does not supply price history" in d["reason"]
+
+
+def test_history_surfaces_a_typed_unavailable(client, tmp_path):
+    from gexdash.providers.base import PriceHistoryUnavailable
+
+    class Refuses(MockProvider):
+        def get_price_history(self, inst, **kw):
+            raise PriceHistoryUnavailable("futures roots are unverified")
+
+    set_provider(CachedProvider(Refuses(), ChainStore(tmp_path / "rf.db")))
+    d = client.get("/api/history?symbol=ES").json()
+    assert d["available"] is False and "unverified" in d["reason"]
+
+
+def test_history_unknown_symbol_404(client):
+    assert client.get("/api/history?symbol=NOPE").status_code == 404
+
+
+def test_meta_lists_both_views(client):
+    assert set(client.get("/api/meta").json()["views"]) == {"columns", "terminal"}
+
+
+def test_index_serves_both_views(client):
+    """Both view containers must exist in the document the server ships."""
+    html = client.get("/").text
+    assert 'id="view-terminal"' in html and 'id="view-columns"' in html
+    assert 'id="view-terminal-btn"' in html and 'id="view-columns-btn"' in html

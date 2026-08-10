@@ -39,10 +39,11 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from ..bars import PriceBars, build_bars
 from ..chain import OptionChain, build_chain
 from ..sessions import exchange_today, previous_session
 from ..instruments import Instrument
-from .base import NotAuthenticated, ProviderError
+from .base import NotAuthenticated, PriceHistoryUnavailable, ProviderError
 
 AUTH_URL = "https://api.schwabapi.com/v1/oauth/authorize"
 TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
@@ -270,6 +271,64 @@ class SchwabProvider:
             # Schwab surfaces the OCC field, which is a prior-session figure.
             oi_asof=self._infer_oi_date(),
             meta={"provider": "schwab", "symbol": instrument.chain_symbol},
+        )
+
+    def get_price_history(
+        self, instrument: Instrument, *, interval_minutes: int = 1, lookback_hours: float = 7.0
+    ) -> PriceBars:
+        """Intraday candles from /marketdata/v1/pricehistory.
+
+        Optional capability: failures raise PriceHistoryUnavailable so the
+        dashboard degrades to "no chart" rather than to an error. The futures
+        roots carry the same unverified caveat as their chains.
+        """
+        if instrument.is_future:
+            raise PriceHistoryUnavailable(
+                f"price history for {instrument.chain_symbol} is unverified against Schwab -- "
+                "the chains endpoint documents equity and index symbols, and this is a "
+                "continuous-contract alias. Use a dated root or a CME-carrying provider."
+            )
+
+        # Schwab only offers a fixed ladder of minute frequencies.
+        freq = min((1, 5, 10, 15, 30), key=lambda f: abs(f - interval_minutes))
+        try:
+            data = self._get(
+                "/pricehistory",
+                {
+                    "symbol": instrument.quote_symbol,
+                    "periodType": "day",
+                    "period": 1,
+                    "frequencyType": "minute",
+                    "frequency": freq,
+                    "needExtendedHoursData": "true",
+                },
+            )
+        except ProviderError as exc:
+            raise PriceHistoryUnavailable(str(exc)) from None
+
+        if data.get("empty") or not data.get("candles"):
+            raise PriceHistoryUnavailable(f"no candles returned for {instrument.quote_symbol}")
+
+        candles = data["candles"]
+        # Trim to the requested window; Schwab returns a whole session.
+        wanted = int(lookback_hours * 60 / max(freq, 1))
+        candles = candles[-wanted:] if wanted > 0 else candles
+
+        return build_bars(
+            instrument,
+            [
+                {
+                    "time": c["datetime"],          # epoch millis
+                    "open": c["open"],
+                    "high": c["high"],
+                    "low": c["low"],
+                    "close": c["close"],
+                    "volume": c.get("volume", 0),
+                }
+                for c in candles
+            ],
+            interval_minutes=freq,
+            meta={"provider": "schwab", "symbol": instrument.quote_symbol},
         )
 
     @staticmethod

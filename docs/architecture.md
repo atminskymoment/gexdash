@@ -31,6 +31,7 @@ whole surface live without a live OI feed, which does not exist at any price.
 | Module | Responsibility |
 |---|---|
 | `greeks.py` | Vectorized Black-Scholes. Black-76 via the exact `q = r` identity, so there is one code path. No scipy — `math.erf` vectorized is 0.14 ms for 2000 contracts. |
+| `bars.py` | Intraday OHLCV + VWAP. Optional: a provider that cannot serve bars raises `PriceHistoryUnavailable` and the UI states the reason. |
 | `american.py` | CRR binomial, used **only** to bound the European-approximation error, and the two per-model disclosure notes. Not in the hot path. |
 | `chain.py` | `OptionChain`: parallel numpy arrays, not a list of objects. `with_spot()` shares arrays rather than copying. |
 | `exposure.py` | The engine: per-strike exposure, walls, flip, max pain, concentration, regime. All modelling choices live in `ExposureConfig`. |
@@ -40,7 +41,7 @@ whole surface live without a live OI feed, which does not exist at any price.
 | `crosscheck.py` | Diffs our greeks against the provider's; `--fit-rate` solves for the implied rate. |
 | `providers/` | `base.py` protocol, `mock.py` synthetic, `schwab.py` OAuth + chains. |
 | `server.py` | FastAPI + SSE. |
-| `static/` | Dashboard. No build step, no CDN, no chart library. |
+| `static/` | Both dashboards. No build step, no CDN, no chart library. |
 
 ## Design decisions
 
@@ -70,6 +71,34 @@ OI surface is usable; a 502 is not.
 
 No framework, no build step, no CDN — one HTML file, one CSS file, one JS
 file, and hand-rolled SVG charts.
+
+### Two views over one dataset
+
+**Terminal** (default) is chart-centric: KPI strip, candlesticks with GEX
+levels drawn as price-axis annotations, a tabbed horizontal exposure panel,
+and an order-flow/bias column. **Columns** is panel-centric: market bias,
+spot & levels, zone analysis, signal chart.
+
+Both consume the same `/api/exposure` payload and **share their chart
+primitives** — `axisTicks`, `niceCeil`, the rounded-end bar paths, the
+metric definitions, the diverging colours. The horizontal exposure panel is
+a coordinate swap of the vertical small multiples, not a second renderer, so
+they cannot drift apart.
+
+Three things the switch has to get right, each of which broke first:
+
+- A hidden container reports `clientWidth === 0`, so charts laid out while
+  hidden get degenerate geometry. Switching **re-renders** rather than
+  unhiding.
+- `display: grid` on `.columns`/`.terminal` outranks the UA stylesheet's
+  `[hidden] { display: none }`, so both views rendered at once until an
+  explicit `!important` rule was added.
+- The SSE handler dispatches to whichever view is mounted; rendering
+  unconditionally would write into detached nodes.
+
+Levels drawn on the price axis are legitimate — they are prices. An exposure
+series on that axis would be the dual-axis anti-pattern, and is deliberately
+absent.
 
 Two deliberate departures from the commercial dashboard the layout is
 modelled on:

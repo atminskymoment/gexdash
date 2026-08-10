@@ -18,6 +18,25 @@ class ChainProvider(Protocol):
     def get_spot(self, instrument) -> float: ...
 ```
 
+### Optional: price history
+
+The terminal view's candle panel needs intraday bars, which is a third data
+source. It is deliberately a **separate, optional** protocol rather than a
+third mandatory method:
+
+```python
+class PriceHistoryProvider(Protocol):
+    def get_price_history(self, instrument, *, interval_minutes=1,
+                          lookback_hours=7.0) -> PriceBars: ...
+```
+
+A provider that cannot serve bars raises `PriceHistoryUnavailable`, the
+endpoint returns `200` with a reason, and the UI renders that reason where the
+chart would be. Nothing else on the dashboard depends on it — the exposure
+surface never needed price history. Schwab implements it for the index and ETF
+symbols via `/marketdata/v1/pricehistory` and refuses the futures roots with
+the same unverified caveat as their chains.
+
 ## Schwab — free, and the recommended start
 
 Free with a brokerage account, and the same data behind thinkorswim. It is a

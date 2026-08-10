@@ -15,6 +15,21 @@ python -m gexdash.server          # http://127.0.0.1:8420
 Runs immediately with a synthetic provider — no credentials, no market hours.
 The banner says `SYNTHETIC — NOT MARKET DATA` when it is not real.
 
+## Two layouts
+
+Switch in the header, or link directly with `?view=`:
+
+| View | Shape | Use |
+|---|---|---|
+| **Terminal** *(default)* | KPI strip, candlestick chart with GEX levels overlaid, tabbed exposure-by-strike, order flow & bias | Watching one instrument through the session |
+| **Columns** | Market bias / spot & levels / zone analysis / signal chart, four panels | Reading the whole exposure surface at once |
+
+Both render the same `/api/exposure` payload and share their chart
+primitives, so the two cannot disagree. The terminal view additionally uses
+`/api/history` for candles — an **optional** capability: a provider that
+cannot serve bars gets a stated reason where the chart would be, and every
+other panel is unaffected.
+
 ---
 
 ## The constraint everything is built around
@@ -37,9 +52,11 @@ placeholders with the reason — never as a plausible-looking number.
 | Tile | Status |
 |---|---|
 | GEX / DEX / VANX / CEX / VEX / THEX, walls, flip, max pain, volume POC, level radar | computed |
+| Candles, VWAP, momentum, price-vs-VWAP | computed **when the provider serves bars** |
 | OI flow, volume bias, intraday OI change | needs classified trade prints (tier B) |
-| Speed engine, momentum | needs underlying time-and-sales (tier C) |
+| Speed engine | needs underlying time-and-sales (tier C) |
 | Kinetics, dealer regime, zone state, king maker | proprietary labels — define your own (tier D) |
+| Market internals (A/D, gainers/losers) | needs per-constituent quotes for all index members — a different asset class, not options data |
 
 ---
 
@@ -165,6 +182,7 @@ setting.
 
 ```
 gexdash/
+  bars.py         intraday OHLCV + VWAP for the terminal view's price panel
   greeks.py       vectorized Black-Scholes; Black-76 via the q = r identity
   american.py     CRR binomial — bounds the SPY/QQQ approximation error
   exposure.py     exposure surface, walls, flip, max pain, regime
@@ -190,7 +208,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 182 tests, ~6s
+python -m pytest tests/ -q      # 223 tests, ~6s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76

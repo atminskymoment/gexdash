@@ -96,11 +96,12 @@
         <label class="chk"><input type="checkbox" id="chk-levels" checked> Levels</label>
         <label class="chk"><input type="checkbox" id="chk-fit"> Fit levels</label>
         <label class="chk"><input type="checkbox" id="chk-vwap" checked> VWAP</label>
+        <label class="chk"><input type="checkbox" id="chk-cross" checked> Crosshair</label>
       </h2>
 
       <div class="chart-controls">
-        <div class="seg" id="range-seg" role="group" aria-label="Range"></div>
-        <div class="seg" id="interval-seg" role="group" aria-label="Bar interval"></div>
+        <label class="csel"><span>Range</span><select id="sel-range"></select></label>
+        <label class="csel"><span>Interval</span><select id="sel-interval"></select></label>
         <span class="grow"></span>
         <div class="seg">
           <button id="zoom-out" title="Zoom out">−</button>

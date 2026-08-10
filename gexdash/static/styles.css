@@ -46,6 +46,11 @@
   /* VWAP: violet, slot 7 of the validated categorical theme — distinct
      from the call/put and pos/neg pairs already on screen. */
   --series-violet: #4a3aa7;
+  /* RSI moving average: yellow, slot 4. Against violet this separates by
+     CVD dE 41 (light) / 27 (dark). It sits at 2.1:1 on the light surface,
+     below the 3:1 bar, so it always ships with a visible value label —
+     the documented relief for a contrast warning. */
+  --series-gold: #eda100;
 
   /* status — reserved, never used as a series */
   --good: #0ca30c;
@@ -79,12 +84,14 @@
     --neg: #e66767;
     --mid: #383835;
     --series-violet: #9085e9;
+    --series-gold: #c98500;
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
   --series-violet: #9085e9;
+  --series-gold: #c98500;
   --surface-1: #1a1a19;
   --page: #0d0d0d;
   --text-primary: #ffffff;
@@ -531,3 +538,16 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 /* The card heading is uppercased, which turns the "1m" interval into "1M" --
    and "1M" is one *month* in the range selector. Case is load-bearing here. */
 #price-title { text-transform: none; letter-spacing: 0.02em; }
+
+
+/* ───────────────────── chart selectors & crosshair ────────────────────── */
+
+.csel { display: flex; align-items: center; gap: 5px; font-size: 10px;
+        letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+.csel select { min-height: 26px; padding: 3px 7px; font-size: 12px; font-weight: 600; }
+
+/* Crosshair sits above the marks and must never eat pointer events. */
+.xhair { pointer-events: none; }
+.xhair line { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; shape-rendering: crispEdges; }
+.xhair rect { fill: var(--text-primary); }
+.xhair text { fill: var(--surface-1); font-size: 9.5px; font-weight: 620; font-variant-numeric: tabular-nums; }

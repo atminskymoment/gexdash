@@ -57,7 +57,7 @@ placeholders with the reason — never as a plausible-looking number.
 | Speed engine | needs underlying time-and-sales (tier C) |
 | Kinetics, dealer regime, zone state, king maker | proprietary labels — define your own (tier D) |
 | Market internals — advancing/declining, A/D ratio, TICK, TRIN, session A/D line | computed from the **exchange breadth symbols** (`$ADVN`/`$DECN`) |
-| Candles 1m–monthly over 1 day–10 years, zoom/pan, RSI · MACD · ADX/DI | computed; **sub-minute bars need a tick feed** and are refused with that reason |
+| Candles 1m–monthly over 1 day–10 years, zoom/pan, crosshair, RSI+MA(20) · MACD · ADX/DI | computed; **sub-minute bars need a tick feed** and are refused with that reason |
 | Top gainers / losers | needs per-constituent quotes for every index member — a separate feed |
 
 ---
@@ -213,7 +213,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 347 tests, ~10s
+python -m pytest tests/ -q      # 352 tests, ~10s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76

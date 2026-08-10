@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["wilder", "ema", "rsi", "macd", "adx", "compute_all"]
+__all__ = ["wilder", "ema", "sma", "rsi", "macd", "adx", "compute_all"]
 
 
 def ema(values: np.ndarray, length: int) -> np.ndarray:
@@ -39,6 +39,24 @@ def ema(values: np.ndarray, length: int) -> np.ndarray:
     for i in range(1, len(values)):
         acc = alpha * values[i] + (1 - alpha) * acc
         out[i] = acc
+    return out
+
+
+def sma(values: np.ndarray, length: int) -> np.ndarray:
+    """Simple moving average, nan until the window fills.
+
+    nan-aware: RSI is undefined for its own warm-up, and a plain rolling mean
+    would poison the first `length` averages with those nans instead of
+    simply not existing yet.
+    """
+    values = np.asarray(values, dtype=float)
+    out = np.full(values.shape, np.nan)
+    if length < 1 or len(values) < length:
+        return out
+    for i in range(length - 1, len(values)):
+        window = values[i - length + 1 : i + 1]
+        if np.all(np.isfinite(window)):
+            out[i] = window.mean()
     return out
 
 
@@ -165,6 +183,7 @@ def compute_all(
     close: np.ndarray,
     *,
     rsi_length: int = 14,
+    rsi_ma_length: int = 20,
     adx_length: int = 14,
     macd_fast: int = 12,
     macd_slow: int = 26,
@@ -173,8 +192,10 @@ def compute_all(
     """Every indicator, JSON-ready and aligned with the input bars."""
     m = macd(close, macd_fast, macd_slow, macd_signal)
     a = adx(high, low, close, adx_length)
+    rsi_values = rsi(close, rsi_length)
     return {
-        "rsi": _clean(rsi(close, rsi_length)),
+        "rsi": _clean(rsi_values),
+        "rsi_ma": _clean(sma(rsi_values, rsi_ma_length)),
         "macd": _clean(m["macd"]),
         "macd_signal": _clean(m["signal"]),
         "macd_histogram": _clean(m["histogram"]),
@@ -183,6 +204,7 @@ def compute_all(
         "di_minus": _clean(a["di_minus"]),
         "params": {
             "rsi_length": rsi_length,
+            "rsi_ma_length": rsi_ma_length,
             "adx_length": adx_length,
             "macd": [macd_fast, macd_slow, macd_signal],
             "smoothing": "Wilder for RSI/ADX, conventional EMA for MACD",

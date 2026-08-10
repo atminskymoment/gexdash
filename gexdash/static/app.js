@@ -331,36 +331,19 @@ function renderChartControls() {
   const cap = state.meta?.chart;
   if (!cap) return;
 
-  const valid = new Set(
-    (cap.ranges.find((r) => r.key === state.range) || {}).intervals || []
-  );
+  const valid = new Set((cap.ranges.find((r) => r.key === state.range) || {}).intervals || []);
 
-  $("range-seg").innerHTML = cap.ranges
-    .map((r) => `<button data-range="${r.key}" aria-selected="${r.key === state.range}" title="${esc(r.label)}">${r.key}</button>`)
+  $("sel-range").innerHTML = cap.ranges
+    .map((r) => `<option value="${r.key}" ${r.key === state.range ? "selected" : ""}>${r.key} — ${esc(r.label)}</option>`)
     .join("");
-  $("interval-seg").innerHTML = cap.intervals
-    .map((i) => `<button data-interval="${i.key}" aria-selected="${i.key === state.interval}"
-        ${valid.has(i.key) ? "" : "disabled"} title="${esc(i.label)}${valid.has(i.key) ? "" : " — not available over " + state.range}">${i.key}</button>`)
+  // Invalid intervals stay listed but disabled, so the constraint is visible
+  // rather than the option simply vanishing.
+  $("sel-interval").innerHTML = cap.intervals
+    .map((i) => `<option value="${i.key}" ${i.key === state.interval ? "selected" : ""} ${valid.has(i.key) ? "" : "disabled"}>${i.key} — ${esc(i.label)}${valid.has(i.key) ? "" : " (n/a)"}</option>`)
     .join("");
+
   $("ind-seg").querySelectorAll("button").forEach((b) =>
     b.setAttribute("aria-selected", String(!!state.indicators[b.dataset.ind])));
-
-  $("range-seg").querySelectorAll("button").forEach((b) =>
-    b.addEventListener("click", () => {
-      state.range = b.dataset.range;
-      // Coarsen the interval if the new range cannot serve it, rather than
-      // letting the server clamp behind the user's back.
-      const now = new Set((cap.ranges.find((r) => r.key === state.range) || {}).intervals || []);
-      if (!now.has(state.interval)) state.interval = [...now].pop() || "1D";
-      loadBars();
-    }));
-  $("interval-seg").querySelectorAll("button").forEach((b) =>
-    b.addEventListener("click", () => { state.interval = b.dataset.interval; loadBars(); }));
-  $("ind-seg").querySelectorAll("button").forEach((b) =>
-    b.addEventListener("click", () => {
-      state.indicators[b.dataset.ind] = !state.indicators[b.dataset.ind];
-      renderChartControls(); renderPriceChart();
-    }));
 
   const notes = state.bars?.plan?.notes || [];
   $("plan-note").textContent = notes.join("  ");
@@ -395,7 +378,7 @@ function renderPriceChart() {
   const n = hi - lo;
 
   const W = Math.max(host.clientWidth || 700, 360);
-  const H = 340;
+  const H = 442;                      // +30% on the previous 340
   const padL = 8, padR = 66, padT = 8, padB = 18;
   const innerW = W - padL - padR, innerH = H - padT - padB;
 
@@ -505,8 +488,20 @@ function renderPriceChart() {
 
   parts.push(`<rect class="hit" x="${padL}" y="${padT}" width="${innerW}" height="${innerH}"/>`);
 
+  parts.push(crosshairMarkup(padL, padT, innerW, innerH));
+
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Price with exposure levels">${parts.join("")}</svg>`;
-  attachZoom(host.querySelector("svg"), total, padL, innerW);
+  const svg = host.querySelector("svg");
+  attachZoom(svg, total, padL, innerW);
+
+  // Geometry the crosshair needs, captured once per render rather than
+  // recomputed (or re-rendered) on every pointer move.
+  state.chart = {
+    W, H, padL, padT, padR, innerW, innerH, n, lo, hi,
+    yLo, yHi, bw, daily,
+    time: vTime, open: vOpen, high: vHigh, low: vLow, close: vClose,
+  };
+  attachCrosshair(svg);
 
   const i = n - 1;
   $("price-title").textContent =
@@ -516,6 +511,101 @@ function renderPriceChart() {
     `   ${n} of ${total} bars` + (bars.synthetic ? "   · synthetic" : "");
 
   renderIndicatorPanes(lo, hi, W, padL, padR, innerW);
+}
+
+/* ------------------------------- crosshair ------------------------------ */
+
+function crosshairMarkup(padL, padT, innerW, innerH) {
+  return `<g class="xhair" data-xhair style="display:none">
+    <line data-xv y1="${padT}" y2="${padT + innerH}"/>
+    <line data-xh x1="${padL}" x2="${padL + innerW}"/>
+    <g data-xprice><rect width="60" height="14" rx="3"/><text x="0" y="0"></text></g>
+    <g data-xtime><rect width="52" height="13" rx="3"/><text x="0" y="0"></text></g>
+  </g>`;
+}
+
+/** Index of the bar under a client X, or null when outside the plot. */
+function barAtClientX(svg, clientX) {
+  const c = state.chart;
+  if (!c) return null;
+  const r = svg.getBoundingClientRect();
+  const px = ((clientX - r.left) / r.width) * c.W;
+  const i = Math.floor((px - c.padL) / c.bw);
+  return i >= 0 && i < c.n ? i : null;
+}
+
+function attachCrosshair(svg) {
+  const move = (ev) => {
+    if (!$("chk-cross").checked) return hideCrosshair();
+    const c = state.chart;
+    const i = barAtClientX(svg, ev.clientX);
+    if (i === null) return hideCrosshair();
+
+    const r = svg.getBoundingClientRect();
+    const py = ((ev.clientY - r.top) / r.height) * c.H;
+    const cy = Math.min(Math.max(py, c.padT), c.padT + c.innerH);
+    const cx = c.padL + i * c.bw + c.bw / 2;
+    const price = c.yHi - ((cy - c.padT) / c.innerH) * (c.yHi - c.yLo);
+
+    const g = svg.querySelector("[data-xhair]");
+    g.style.display = "";
+    g.querySelector("[data-xv]").setAttribute("x1", cx);
+    g.querySelector("[data-xv]").setAttribute("x2", cx);
+    g.querySelector("[data-xh]").setAttribute("y1", cy);
+    g.querySelector("[data-xh]").setAttribute("y2", cy);
+
+    const pg = g.querySelector("[data-xprice]");
+    pg.querySelector("rect").setAttribute("x", c.padL + c.innerW + 1);
+    pg.querySelector("rect").setAttribute("y", cy - 7);
+    const pt = pg.querySelector("text");
+    pt.setAttribute("x", c.padL + c.innerW + 5);
+    pt.setAttribute("y", cy + 3.5);
+    pt.textContent = price.toFixed(2);
+
+    const tg = g.querySelector("[data-xtime]");
+    const stamp = String(c.time[i]);
+    const label = c.daily ? stamp.slice(0, 10) : stamp.slice(11, 16);
+    const tw = label.length * 6 + 8;
+    tg.querySelector("rect").setAttribute("x", Math.min(Math.max(cx - tw / 2, c.padL), c.padL + c.innerW - tw));
+    tg.querySelector("rect").setAttribute("y", c.padT + c.innerH + 2);
+    tg.querySelector("rect").setAttribute("width", tw);
+    const tt = tg.querySelector("text");
+    tt.setAttribute("x", Math.min(Math.max(cx, c.padL + tw / 2), c.padL + c.innerW - tw / 2));
+    tt.setAttribute("y", c.padT + c.innerH + 11.5);
+    tt.setAttribute("text-anchor", "middle");
+    tt.textContent = label;
+
+    syncIndicatorCrosshair(cx);
+
+    // Read out the hovered bar, not just the last one.
+    $("price-ohlc").textContent =
+      `O ${c.open[i].toFixed(2)}  H ${c.high[i].toFixed(2)}  L ${c.low[i].toFixed(2)}  C ${c.close[i].toFixed(2)}` +
+      `   ${label}`;
+  };
+
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerleave", hideCrosshair);
+}
+
+function hideCrosshair() {
+  document.querySelectorAll("[data-xhair]").forEach((g) => (g.style.display = "none"));
+  const c = state.chart;
+  if (c && c.n) {
+    const i = c.n - 1;
+    $("price-ohlc").textContent =
+      `O ${c.open[i].toFixed(2)}  H ${c.high[i].toFixed(2)}  L ${c.low[i].toFixed(2)}  C ${c.close[i].toFixed(2)}` +
+      `   ${c.n} of ${state.bars?.close?.length ?? c.n} bars` +
+      (state.bars?.synthetic ? "   · synthetic" : "");
+  }
+}
+
+/** Same x on every indicator pane, so the panes read as one chart. */
+function syncIndicatorCrosshair(cx) {
+  document.querySelectorAll("#indicator-panes [data-xhair]").forEach((g) => {
+    g.style.display = "";
+    g.querySelector("[data-xv]").setAttribute("x1", cx);
+    g.querySelector("[data-xv]").setAttribute("x2", cx);
+  });
 }
 
 /* ------------------------------ zoom / pan ------------------------------ */
@@ -579,13 +669,15 @@ function zoomBy(factor) {
 
 /* --------------------------- indicator panes ---------------------------- */
 
+// Heights are +30% on the originals (62/68/62).
 const IND_SPECS = [
-  { key: "rsi", title: "RSI (14)", height: 62,
-    series: [["rsi", "var(--series-violet)"]], domain: [0, 100], guides: [30, 70] },
-  { key: "macd", title: "MACD (12,26,9)", height: 68,
+  { key: "rsi", title: "RSI (14) + MA(20)", height: 81,
+    series: [["rsi", "var(--series-violet)"], ["rsi_ma", "var(--series-gold)"]],
+    domain: [0, 100], guides: [30, 70] },
+  { key: "macd", title: "MACD (12,26,9)", height: 88,
     series: [["macd", "var(--series-call)"], ["macd_signal", "var(--series-put)"]],
     histogram: "macd_histogram", zero: true },
-  { key: "adx", title: "ADX / DI (14)", height: 62,
+  { key: "adx", title: "ADX / DI (14)", height: 81,
     series: [["adx", "var(--text-primary)"], ["di_plus", "var(--pos)"], ["di_minus", "var(--neg)"]],
     domain: [0, 100], guides: [25] },
 ];
@@ -627,7 +719,7 @@ function renderIndicatorPanes(lo, hi, W, padL, padR, innerW) {
         if (v === null) return;
         const y0 = y(0), yv = y(v);
         parts.push(`<rect class="bar" fill="${v >= 0 ? "var(--pos)" : "var(--neg)"}" x="${x(i) - bw / 2}"
-          y="${Math.min(y0, yv)}" width="${bw}" height="${Math.max(Math.abs(yv - y0), 0.6)}" opacity="0.45"/>`);
+          y="${Math.min(y0, yv)}" width="${bw}" height="${Math.max(Math.abs(yv - y0), 0.6)}"/>`);
       });
     }
 
@@ -646,7 +738,10 @@ function renderIndicatorPanes(lo, hi, W, padL, padR, innerW) {
     const last = spec.series
       .map(([k, c], i) => {
         const v = [...cols[i]].reverse().find((x) => x !== null && isFinite(x));
-        return v === undefined ? null : `<tspan fill="${c}">${k.replace("macd_", "").replace("di_", "DI")} ${v.toFixed(1)}</tspan>`;
+        const name = k === "rsi_ma" ? "MA20" : k.replace("macd_", "").replace("di_", "DI");
+        // The gold MA sits below 3:1 on the light surface, so this label is
+        // the documented relief -- it is not optional decoration.
+        return v === undefined ? null : `<tspan fill="${c}">${name} ${v.toFixed(1)}</tspan>`;
       })
       .filter(Boolean).join('<tspan fill="var(--text-muted)">  ·  </tspan>');
 
@@ -657,6 +752,7 @@ function renderIndicatorPanes(lo, hi, W, padL, padR, innerW) {
     // ("MACD (12,26,9)") at narrow widths.
     parts.push(`<text class="ind-title" x="${padL + innerW - 4}" y="9" text-anchor="end">${last}</text>`);
 
+    parts.push(`<g class="xhair" data-xhair style="display:none"><line data-xv y1="0" y2="${H}"/></g>`);
     blocks.push(`<div class="ind-pane"><svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${spec.title}">${parts.join("")}</svg></div>`);
   });
 
@@ -1192,6 +1288,22 @@ $("f-symbol").addEventListener("change", () => {
 
 ["chk-levels", "chk-vwap", "chk-fit"].forEach((id) =>
   $(id).addEventListener("change", renderPriceChart));
+$("chk-cross").addEventListener("change", () => { if (!$("chk-cross").checked) hideCrosshair(); });
+
+$("sel-range").addEventListener("change", (e) => {
+  state.range = e.target.value;
+  const cap = state.meta?.chart;
+  const now = new Set((cap.ranges.find((r) => r.key === state.range) || {}).intervals || []);
+  // Coarsen rather than let the server clamp behind the user's back.
+  if (!now.has(state.interval)) state.interval = [...now].pop() || "1D";
+  loadBars();
+});
+$("sel-interval").addEventListener("change", (e) => { state.interval = e.target.value; loadBars(); });
+$("ind-seg").querySelectorAll("button").forEach((b) =>
+  b.addEventListener("click", () => {
+    state.indicators[b.dataset.ind] = !state.indicators[b.dataset.ind];
+    renderChartControls(); renderPriceChart();
+  }));
 
 $("zoom-in").addEventListener("click", () => zoomBy(1 / 1.5));
 $("zoom-out").addEventListener("click", () => zoomBy(1.5));

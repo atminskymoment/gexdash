@@ -194,3 +194,62 @@ def test_compute_all_is_json_safe():
     # which is invalid JSON and silently accepted by some parsers.
     assert any(v is None for v in round_tripped["adx"])
     assert "Wilder" in round_tripped["params"]["smoothing"]
+
+
+# ----------------------------------------------------------------------
+# RSI moving average
+# ----------------------------------------------------------------------
+
+
+def test_sma_is_nan_until_the_window_fills():
+    from gexdash.indicators import sma
+    x = np.arange(1.0, 11.0)
+    out = sma(x, 5)
+    assert np.all(np.isnan(out[:4]))
+    assert out[4] == pytest.approx(np.mean(x[:5]))
+    assert out[-1] == pytest.approx(np.mean(x[-5:]))
+
+
+def test_sma_does_not_propagate_the_indicator_warmup_nans():
+    """RSI is undefined for its own warm-up.
+
+    A plain rolling mean would turn every window touching those nans into
+    nan for good; the MA should simply not exist yet and then start cleanly.
+    """
+    from gexdash.indicators import sma
+    x = np.concatenate([np.full(14, np.nan), np.full(20, 50.0)])
+    out = sma(x, 20)
+    assert np.all(np.isnan(out[:33]))
+    assert out[33] == pytest.approx(50.0)
+
+
+def test_rsi_ma_is_a_20_period_mean_of_rsi():
+    from gexdash.indicators import rsi as rsi_fn, sma
+    rng = np.random.default_rng(21)
+    close = 100 + np.cumsum(rng.normal(0, 1, 200))
+
+    out = compute_all(close + 0.5, close - 0.5, close)
+    want = sma(rsi_fn(close, 14), 20)
+
+    got = [v for v in out["rsi_ma"]]
+    assert len(got) == len(close)
+    for i in (150, 199):
+        assert got[i] == pytest.approx(want[i], abs=1e-6)
+    assert out["params"]["rsi_ma_length"] == 20
+
+
+def test_rsi_ma_is_smoother_than_rsi():
+    """The point of the line: it should lag and steady the raw series."""
+    rng = np.random.default_rng(5)
+    close = 100 + np.cumsum(rng.normal(0, 1.2, 300))
+    out = compute_all(close + 0.5, close - 0.5, close)
+
+    raw = np.array([v for v in out["rsi"][60:]], dtype=float)
+    ma = np.array([v if v is not None else np.nan for v in out["rsi_ma"][60:]], dtype=float)
+    assert np.nanstd(np.diff(ma)) < np.nanstd(np.diff(raw))
+
+
+def test_rsi_ma_stays_within_rsi_bounds():
+    high, low, close = _trend(240, slope=0.2, noise=1.4, seed=13)
+    vals = [v for v in compute_all(high, low, close)["rsi_ma"] if v is not None]
+    assert min(vals) >= 0 and max(vals) <= 100

@@ -23,7 +23,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,6 +32,7 @@ from .exposure import EXPIRY_WINDOWS, ExposureConfig
 from .providers import build_provider
 from .sessions import market_phase
 from .breadth import FAMILY_EXCHANGE, symbols_for_family
+from .history import capability_matrix, resolve as resolve_plan
 from .providers.base import (
     BreadthProvider,
     BreadthUnavailable,
@@ -125,6 +126,21 @@ def _build_payload(inst, cfg: ExposureConfig, *, live_spot: bool = True) -> dict
     # an empty box reads as "zero", and a plausible number would be worse.
     payload["unavailable"] = UNAVAILABLE_TILES
     payload["session"] = market_phase()
+
+    # So the dashboard can say "not connected" and link to /connect rather
+    # than just showing mock data that looks real.
+    source = getattr(provider, "provider", provider)
+    auth = getattr(source, "auth", None)
+    payload["auth"] = (
+        {"provider": provider.name, "needs_login": False}
+        if auth is None
+        else {
+            "provider": provider.name,
+            "configured": auth.configured,
+            "needs_login": auth.configured and not auth.status().get("authenticated"),
+            "refresh_expires_in_days": auth.status().get("refresh_expires_in_days"),
+        }
+    )
     payload["instrument_meta"] = {
         "key": inst.key,
         "label": inst.label,
@@ -266,41 +282,49 @@ async def api_stream(
 @app.get("/api/history")
 async def api_history(
     symbol: str = Query("SPX"),
-    interval_minutes: int = Query(1, ge=1, le=60),
-    lookback_hours: float = Query(7.0, gt=0, le=48),
+    range: str = Query("1D", description="1D 5D 10D 1M 3M 6M YTD 1Y 2Y 5Y 10Y"),
+    interval: str = Query("1m", description="1m 5m 10m 15m 30m 1h 2h 4h 1D 1W 1Mo"),
+    indicators: bool = Query(True),
+    # Legacy form, kept so existing callers keep working.
+    interval_minutes: int | None = Query(None, deprecated=True),
+    lookback_hours: float | None = Query(None, deprecated=True),
 ):
-    """Intraday OHLCV bars for the terminal view's price panel.
+    """OHLCV bars, optionally with RSI / MACD / ADX.
 
-    Deliberately a separate endpoint from /api/exposure rather than folded
-    into it: bars change on a different cadence than the exposure surface,
-    and doubling the SSE payload every 2 seconds to redraw candles that moved
-    by one bar would be waste.
+    Separate from /api/exposure on purpose: bars change on a different
+    cadence, and re-sending them on every SSE tick would be waste.
 
-    Returns 200 with ``{"available": false, "reason": ...}`` rather than an
-    error status when the provider cannot serve history -- the dashboard is
-    fully usable without it, and the UI renders the reason in place of the
-    chart.
+    Returns 200 with ``{"available": false, "reason": ...}`` when the provider
+    cannot serve history -- the rest of the dashboard is unaffected.
     """
     inst = _resolve(symbol)
     provider = get_provider()
-    source = getattr(provider, "provider", provider)  # unwrap CachedProvider
+    source = getattr(provider, "provider", provider)
 
     if not isinstance(source, PriceHistoryProvider):
-        return {
-            "available": False,
-            "symbol": inst.key,
-            "reason": f"the {provider.name} provider does not supply price history",
-        }
+        return {"available": False, "symbol": inst.key,
+                "reason": f"the {provider.name} provider does not supply price history"}
+
+    legacy = interval_minutes is not None or lookback_hours is not None
+    plan = None
+    if not legacy:
+        try:
+            plan = resolve_plan(range, interval)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     def _fetch():
+        if plan is not None:
+            return source.get_price_history(inst, plan=plan)
         return source.get_price_history(
-            inst, interval_minutes=interval_minutes, lookback_hours=lookback_hours
+            inst, interval_minutes=interval_minutes or 1, lookback_hours=lookback_hours or 7.0
         )
 
     try:
         bars = await asyncio.to_thread(_fetch)
     except PriceHistoryUnavailable as exc:
-        return {"available": False, "symbol": inst.key, "reason": str(exc)}
+        return {"available": False, "symbol": inst.key, "reason": str(exc),
+                "plan": plan.to_dict() if plan else None}
     except ProviderError as exc:
         return {"available": False, "symbol": inst.key, "reason": f"provider error: {exc}"}
 
@@ -308,7 +332,122 @@ async def api_history(
     payload["available"] = True
     payload["symbol"] = inst.key
     payload["synthetic"] = bool((bars.meta or {}).get("synthetic"))
+    if plan is not None:
+        payload["plan"] = plan.to_dict()
+
+    if indicators and len(bars) > 1:
+        from .indicators import compute_all
+        payload["indicators"] = await asyncio.to_thread(
+            compute_all, bars.high, bars.low, bars.close
+        )
     return payload
+
+
+# ---------------------------------------------------------------------
+# Schwab connection
+#
+# The CLI login works but forces a terminal round-trip, and the
+# authorization code is short-lived and single-use -- every second spent
+# switching windows is a second it ages. This does the exchange from the
+# browser tab that already has the redirect URL in it.
+#
+# Deliberately not requiring the loopback listener: that needs port 443
+# (root) or a re-registered callback. This works with whatever callback the
+# Schwab app already has.
+# ---------------------------------------------------------------------
+
+
+def _schwab_auth():
+    """The live provider's auth object when possible, else a fresh one.
+
+    Reusing the cached provider's instance means a successful exchange
+    updates its in-memory token too, so the very next request is authorised
+    without waiting for a re-read.
+    """
+    from .providers.schwab import SchwabAuth
+
+    source = getattr(get_provider(), "provider", None)
+    auth = getattr(source, "auth", None)
+    return auth if auth is not None else SchwabAuth()
+
+
+@app.get("/api/auth/status")
+async def api_auth_status():
+    """Credential and token state. Never returns secret material."""
+    from .config import settings_report
+
+    auth = _schwab_auth()
+    status = auth.status()
+    status["provider"] = get_provider().name
+    status["authorize_url"] = auth.authorize_url() if auth.configured else None
+    status["redirect_candidates"] = auth.redirect_candidates() if auth.configured else []
+    status["settings"] = [
+        {"key": k, "value": v, "source": src} for k, v, src in settings_report()
+    ]
+    return status
+
+
+@app.post("/api/auth/exchange")
+async def api_auth_exchange(payload: dict = Body(...)):
+    """Exchange a pasted redirect URL (or bare code) for tokens."""
+    from .providers.schwab import _extract_code
+
+    auth = _schwab_auth()
+    if not auth.configured:
+        raise HTTPException(400, "SCHWAB_APP_KEY / SCHWAB_APP_SECRET are not set")
+
+    code = _extract_code(str(payload.get("redirect_url", "")))
+    if not code:
+        raise HTTPException(400, "no authorization code found in that value")
+
+    # Schwab's authorize endpoint tolerates a trailing-slash difference that
+    # its token endpoint rejects, so try each form against the one code.
+    errors = []
+    for candidate in auth.redirect_candidates():
+        try:
+            await asyncio.to_thread(auth.exchange_code_value, code, redirect_uri=candidate)
+        except ProviderError as exc:
+            errors.append({"redirect_uri": candidate, "error": str(exc)[:300]})
+            continue
+
+        _breadth_cache.clear()
+        status = auth.status()
+        return {
+            "ok": True,
+            "redirect_uri_accepted": candidate,
+            "configured_redirect_uri": auth.callback_url,
+            "mismatch": candidate != auth.callback_url,
+            "access_expires_in_minutes": status["access_expires_in_minutes"],
+            "refresh_expires_in_days": status["refresh_expires_in_days"],
+        }
+
+    return {
+        "ok": False,
+        "attempts": errors,
+        "hint": (
+            "Credentials are not the issue if Basic auth was accepted. With expiry and "
+            "both redirect_uri forms ruled out, the remaining cause is app state: the app "
+            "must be 'Ready For Use' on developer.schwab.com. 'Approved - Pending' "
+            "authorizes fine but cannot exchange codes."
+        ),
+    }
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout():
+    """Delete the stored token. Requires a fresh browser consent afterwards."""
+    auth = _schwab_auth()
+    existed = auth.token_path.exists()
+    if existed:
+        auth.token_path.unlink()
+    auth._token = None
+    _breadth_cache.clear()
+    return {"ok": True, "removed": existed}
+
+
+@app.get("/connect")
+async def connect_page():
+    return FileResponse(STATIC_DIR / "connect.html")
 
 
 @app.get("/api/breadth")
@@ -398,6 +537,7 @@ async def api_meta():
         "flip_methods": ["spot_solve", "cumulative"],
         "provider": get_provider().name,
         "views": ["columns", "terminal"],
+        "chart": capability_matrix(),
         "exchanges": FAMILY_EXCHANGE,
     }
 

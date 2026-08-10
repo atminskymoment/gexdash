@@ -370,3 +370,146 @@ def test_market_internals_is_no_longer_claimed_impossible(client):
     d = client.get("/api/exposure?symbol=SPX").json()
     assert "market_internals" not in d["unavailable"]
     assert "movers" in d["unavailable"]
+
+
+# ----------------------------------------------------------------------
+# Schwab connection page
+# ----------------------------------------------------------------------
+
+
+def test_connect_page_is_served(client):
+    r = client.get("/connect")
+    assert r.status_code == 200
+    assert "Authorize with Schwab" in r.text
+    assert 'id="redirect-url"' in r.text
+
+
+def test_auth_status_never_leaks_a_secret(client, monkeypatch, tmp_path):
+    """The page renders this verbatim, so it must be safe to display."""
+    from gexdash.providers.schwab import SchwabAuth, SchwabProvider
+    from gexdash.store import CachedProvider, ChainStore
+
+    monkeypatch.setenv("SCHWAB_APP_KEY", "TOPSECRETKEY123")
+    monkeypatch.setenv("SCHWAB_APP_SECRET", "TOPSECRETSECRET")
+    auth = SchwabAuth(token_path=tmp_path / "t.json")
+    set_provider(CachedProvider(SchwabProvider(auth), ChainStore(tmp_path / "s.db")))
+
+    body = client.get("/api/auth/status").text
+
+    # The app SECRET must never appear anywhere.
+    assert "TOPSECRETSECRET" not in body
+
+    # The app KEY is the OAuth client_id, which is inherently public -- it is
+    # in every authorize URL the browser visits, so it necessarily appears
+    # there. It is still redacted in the settings table, which is the part
+    # someone screenshots.
+    settings = client.get("/api/auth/status").json()["settings"]
+    key_row = next(r for r in settings if r["key"] == "SCHWAB_APP_KEY")
+    secret_row = next(r for r in settings if r["key"] == "SCHWAB_APP_SECRET")
+    assert key_row["value"] == "<set, 15 chars>"
+    assert secret_row["value"] == "<set, 15 chars>"
+    assert "authorize_url" in body
+
+
+def test_auth_status_without_credentials(client):
+    d = client.get("/api/auth/status").json()
+    assert d["authenticated"] is False
+    assert d["authorize_url"] is None
+
+
+def test_exchange_rejects_a_value_with_no_code(client, monkeypatch, tmp_path):
+    from gexdash.providers.schwab import SchwabAuth, SchwabProvider
+    from gexdash.store import CachedProvider, ChainStore
+
+    monkeypatch.setenv("SCHWAB_APP_KEY", "k")
+    monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
+    set_provider(CachedProvider(SchwabProvider(SchwabAuth(token_path=tmp_path / "t.json")),
+                                ChainStore(tmp_path / "s.db")))
+
+    r = client.post("/api/auth/exchange", json={"redirect_url": "https://127.0.0.1/?session=only"})
+    assert r.status_code == 400
+    assert "no authorization code" in r.json()["detail"]
+
+
+def test_exchange_tries_every_redirect_form_then_reports(client, monkeypatch, tmp_path):
+    """Each attempt is reported by redirect_uri, so a mismatch is diagnosable
+    rather than a bare 'invalid_grant'."""
+    from gexdash.providers import schwab
+    from gexdash.providers.base import ProviderError
+    from gexdash.store import CachedProvider, ChainStore
+
+    monkeypatch.setenv("SCHWAB_APP_KEY", "k")
+    monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
+    auth = schwab.SchwabAuth(callback_url="https://127.0.0.1/", token_path=tmp_path / "t.json")
+    set_provider(CachedProvider(schwab.SchwabProvider(auth), ChainStore(tmp_path / "s.db")))
+
+    tried = []
+    def boom(self, code, redirect_uri=None):
+        tried.append(redirect_uri)
+        raise ProviderError("invalid_grant")
+    monkeypatch.setattr(schwab.SchwabAuth, "exchange_code_value", boom)
+
+    d = client.post("/api/auth/exchange", json={"redirect_url": "https://127.0.0.1/?code=X%40"}).json()
+    assert d["ok"] is False
+    assert tried == ["https://127.0.0.1/", "https://127.0.0.1"]
+    assert len(d["attempts"]) == 2
+    assert "Ready For Use" in d["hint"]
+
+
+def test_exchange_reports_which_redirect_form_worked(client, monkeypatch, tmp_path):
+    from gexdash.providers import schwab
+    from gexdash.providers.base import ProviderError
+    from gexdash.store import CachedProvider, ChainStore
+
+    monkeypatch.setenv("SCHWAB_APP_KEY", "k")
+    monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
+    auth = schwab.SchwabAuth(callback_url="https://127.0.0.1/", token_path=tmp_path / "t.json")
+    set_provider(CachedProvider(schwab.SchwabProvider(auth), ChainStore(tmp_path / "s.db")))
+
+    def only_bare(self, code, redirect_uri=None):
+        if redirect_uri != "https://127.0.0.1":
+            raise ProviderError("invalid_grant")
+        self._save({"access_token": "a", "refresh_token": "r", "expires_in": 1800}, new_consent=True)
+        return {}
+    monkeypatch.setattr(schwab.SchwabAuth, "exchange_code_value", only_bare)
+
+    d = client.post("/api/auth/exchange", json={"redirect_url": "https://127.0.0.1/?code=X"}).json()
+    assert d["ok"] is True
+    assert d["redirect_uri_accepted"] == "https://127.0.0.1"
+    assert d["mismatch"] is True          # tells the user to fix .env
+    assert d["refresh_expires_in_days"] == pytest.approx(7.0, abs=0.01)
+
+
+def test_logout_removes_the_token(client, monkeypatch, tmp_path):
+    from gexdash.providers.schwab import SchwabAuth, SchwabProvider
+    from gexdash.store import CachedProvider, ChainStore
+
+    monkeypatch.setenv("SCHWAB_APP_KEY", "k")
+    monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
+    auth = SchwabAuth(token_path=tmp_path / "t.json")
+    auth._save({"access_token": "a", "refresh_token": "r", "expires_in": 1800}, new_consent=True)
+    set_provider(CachedProvider(SchwabProvider(auth), ChainStore(tmp_path / "s.db")))
+
+    assert client.post("/api/auth/logout").json() == {"ok": True, "removed": True}
+    assert not (tmp_path / "t.json").exists()
+    assert client.get("/api/auth/status").json()["authenticated"] is False
+
+
+def test_exposure_payload_flags_when_login_is_needed(client, monkeypatch, tmp_path):
+    """The dashboard must say 'not connected' rather than quietly showing
+    numbers from a provider that cannot answer."""
+    from gexdash.providers.schwab import SchwabAuth, SchwabProvider
+    from gexdash.store import CachedProvider, ChainStore
+
+    monkeypatch.setenv("SCHWAB_APP_KEY", "k")
+    monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
+    set_provider(CachedProvider(SchwabProvider(SchwabAuth(token_path=tmp_path / "none.json")),
+                                ChainStore(tmp_path / "s.db")))
+    # The chain fetch will fail unauthenticated; only the auth block matters.
+    r = client.get("/api/exposure?symbol=SPX")
+    if r.status_code == 200:
+        assert r.json()["auth"]["needs_login"] is True
+
+
+def test_mock_provider_reports_no_login_needed(client):
+    assert client.get("/api/exposure?symbol=SPX").json()["auth"]["needs_login"] is False

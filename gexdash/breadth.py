@@ -39,15 +39,24 @@ __all__ = ["BREADTH_SYMBOLS", "BreadthSnapshot", "build_snapshot", "symbols_for_
 #: against. Edit here if a ticker does not resolve on your entitlement — the
 #: payload reports which symbols failed by name.
 BREADTH_SYMBOLS: dict[str, dict[str, str]] = {
+    # Verified live: $ADVN, $DECN, $TICK and $TRIN carry real values.
+    # $ADD resolves but returns 0.0, and $UVOL returns Long.MAX_VALUE/1e8 --
+    # both are filtered rather than displayed.
     "NYSE": {
         "advancing": "$ADVN",
         "declining": "$DECN",
-        "net": "$ADD",          # advancing - declining; used as a cross-check
+        "net": "$ADD",          # cross-check only; often unpopulated
         "up_volume": "$UVOL",
         "down_volume": "$DVOL",
         "tick": "$TICK",
         "trin": "$TRIN",
     },
+    # Verified against a live Schwab entitlement (Aug 2026): every symbol
+    # below either resolves and returns 0.0, or is rejected outright
+    # ($ADVQ / $DECQ / $UNCQ are invalid symbols). Nasdaq internals appear
+    # not to be carried. Left in place, correctly named, so the panel can
+    # report precisely what it tried -- and so it starts working by itself
+    # if the entitlement changes.
     "NASDAQ": {
         "advancing": "$ADVQ",
         "declining": "$DECQ",
@@ -192,7 +201,10 @@ def build_snapshot(
     # Cross-check: the counts we show must imply the net the exchange
     # publishes. A mismatch means a symbol is mapped to the wrong series --
     # which would otherwise produce entirely plausible numbers.
-    if snap.advancing is not None and snap.declining is not None and snap.net_reported is not None:
+    # Only meaningful when the exchange actually published a net. Schwab's
+    # $ADD resolves but returns 0.0 while $ADVN/$DECN carry real counts, so a
+    # missing net must read as missing rather than as a contradiction.
+    if snap.advancing is not None and snap.declining is not None and snap.net_reported:
         derived = snap.advancing - snap.declining
         if abs(derived - snap.net_reported) > tolerance:
             snap.reconciliation_warning = (

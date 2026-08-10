@@ -56,7 +56,8 @@ placeholders with the reason — never as a plausible-looking number.
 | OI flow, volume bias, intraday OI change | needs classified trade prints (tier B) |
 | Speed engine | needs underlying time-and-sales (tier C) |
 | Kinetics, dealer regime, zone state, king maker | proprietary labels — define your own (tier D) |
-| Market internals — advancing/declining, A/D ratio, TICK, TRIN, session A/D line | computed from the **exchange breadth symbols** (`$ADVN`/`$DECN`, `$ADVQ`/`$DECQ`) |
+| Market internals — advancing/declining, A/D ratio, TICK, TRIN, session A/D line | computed from the **exchange breadth symbols** (`$ADVN`/`$DECN`) |
+| Candles 1m–monthly over 1 day–10 years, zoom/pan, RSI · MACD · ADX/DI | computed; **sub-minute bars need a tick feed** and are refused with that reason |
 | Top gainers / losers | needs per-constituent quotes for every index member — a separate feed |
 
 ---
@@ -184,6 +185,8 @@ setting.
 ```
 gexdash/
   bars.py         intraday OHLCV + VWAP for the terminal view's price panel
+  history.py      chart range/interval vocabulary, provider mapping, aggregation
+  indicators.py   RSI, MACD, ADX/DI -- Wilder smoothing where Wilder specified it
   breadth.py      exchange market internals from the $ADVN/$DECN symbol family
   greeks.py       vectorized Black-Scholes; Black-76 via the q = r identity
   american.py     CRR binomial — bounds the SPY/QQQ approximation error
@@ -210,7 +213,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 255 tests, ~7s
+python -m pytest tests/ -q      # 347 tests, ~10s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76

@@ -34,6 +34,11 @@ const state = {
   showTable: false,
   view: "terminal",
   expTab: "gex",
+  range: "1D",
+  interval: "1m",
+  // Visible window as fractional indices into the bar array. null = fit all.
+  zoom: null,
+  indicators: { rsi: true, macd: true, adx: false },
 };
 
 /* ----------------------------------------------------------- formatting */
@@ -196,18 +201,22 @@ async function loadBreadth() {
 }
 
 async function loadBars() {
+  const q = new URLSearchParams({
+    symbol: $("f-symbol").value, range: state.range, interval: state.interval, indicators: "true",
+  });
   try {
-    const res = await fetch(`/api/history?symbol=${$("f-symbol").value}&interval_minutes=1&lookback_hours=7`);
+    const res = await fetch(`/api/history?${q}`);
     state.bars = await res.json();
+    state.zoom = null;                       // a new series starts fitted
   } catch (err) {
     state.bars = { available: false, reason: err.message };
   }
-  if (state.view === "terminal") renderPriceChart();
+  if (state.view === "terminal") { renderChartControls(); renderPriceChart(); }
 }
 
 /* Errors reuse a single node. Under SSE this fires on every failed tick and
  * EventSource retries on a timer — prepending would grow an unbounded stack. */
-function notice(msg, isError) {
+function notice(msg, isError, allowHtml) {
   const box = $("notices");
   if (!msg) { box.querySelectorAll(".err").forEach((n) => n.remove()); return; }
   const cls = isError ? "err" : "info";
@@ -215,7 +224,10 @@ function notice(msg, isError) {
   if (!el) { el = document.createElement("div"); el.className = `notice ${cls}`; box.prepend(el); }
   const n = isError ? Number(el.dataset.count || 0) + 1 : 0;
   el.dataset.count = n;
-  el.innerHTML = `<strong>${isError ? "Error" : "Note"}:</strong> ${esc(msg)}` +
+  // Only trusted, locally-composed strings may pass allowHtml — provider
+  // and error text is always escaped.
+  const shown = allowHtml ? msg : esc(msg);
+  el.innerHTML = `<strong>${isError ? "Error" : "Note"}:</strong> ${shown}` +
     (n > 1 ? ` <span class="muted">(×${n})</span>` : "");
 }
 
@@ -245,6 +257,17 @@ function renderHeader(d) {
   $("clock-next").textContent = s.next_transition
     ? `→ ${s.next_transition} in ${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m` : "";
   $("badge-provider").textContent = `provider: ${d.provider}`;
+
+  // Connection state, if the provider has an auth story at all.
+  const auth = d.auth || {};
+  if (auth.needs_login) {
+    notice('Schwab credentials are configured but not connected. ' +
+           '<a href="/connect">Connect to Schwab →</a>', false, true);
+  } else if (auth.refresh_expires_in_days !== null && auth.refresh_expires_in_days !== undefined
+             && auth.refresh_expires_in_days < 2) {
+    notice(`Schwab refresh token expires in ${auth.refresh_expires_in_days.toFixed(1)} days. ` +
+           '<a href="/connect">Reconnect →</a>', false, true);
+  }
   const syn = $("badge-synthetic");
   syn.hidden = !d.synthetic;
   syn.textContent = "synthetic — not market data";
@@ -295,11 +318,63 @@ function renderTerminal(d) {
   renderExpTabs();
   renderExposureH(d);
   renderOrderFlow(d);
+  renderChartControls();
   renderPriceChart();
   renderInternals();
 }
 
 /* ------------------------- candlestick price panel ---------------------- */
+
+/** Range / interval / indicator controls, driven by the server's matrix so
+ *  impossible pairs are disabled rather than silently substituted. */
+function renderChartControls() {
+  const cap = state.meta?.chart;
+  if (!cap) return;
+
+  const valid = new Set(
+    (cap.ranges.find((r) => r.key === state.range) || {}).intervals || []
+  );
+
+  $("range-seg").innerHTML = cap.ranges
+    .map((r) => `<button data-range="${r.key}" aria-selected="${r.key === state.range}" title="${esc(r.label)}">${r.key}</button>`)
+    .join("");
+  $("interval-seg").innerHTML = cap.intervals
+    .map((i) => `<button data-interval="${i.key}" aria-selected="${i.key === state.interval}"
+        ${valid.has(i.key) ? "" : "disabled"} title="${esc(i.label)}${valid.has(i.key) ? "" : " — not available over " + state.range}">${i.key}</button>`)
+    .join("");
+  $("ind-seg").querySelectorAll("button").forEach((b) =>
+    b.setAttribute("aria-selected", String(!!state.indicators[b.dataset.ind])));
+
+  $("range-seg").querySelectorAll("button").forEach((b) =>
+    b.addEventListener("click", () => {
+      state.range = b.dataset.range;
+      // Coarsen the interval if the new range cannot serve it, rather than
+      // letting the server clamp behind the user's back.
+      const now = new Set((cap.ranges.find((r) => r.key === state.range) || {}).intervals || []);
+      if (!now.has(state.interval)) state.interval = [...now].pop() || "1D";
+      loadBars();
+    }));
+  $("interval-seg").querySelectorAll("button").forEach((b) =>
+    b.addEventListener("click", () => { state.interval = b.dataset.interval; loadBars(); }));
+  $("ind-seg").querySelectorAll("button").forEach((b) =>
+    b.addEventListener("click", () => {
+      state.indicators[b.dataset.ind] = !state.indicators[b.dataset.ind];
+      renderChartControls(); renderPriceChart();
+    }));
+
+  const notes = state.bars?.plan?.notes || [];
+  $("plan-note").textContent = notes.join("  ");
+}
+
+/** Visible bar window, clamped. null zoom means fit everything. */
+function visibleWindow(n) {
+  if (!state.zoom) return [0, n];
+  const span = Math.max(state.zoom[1] - state.zoom[0], 5);
+  let lo = Math.max(0, Math.round(state.zoom[0]));
+  let hi = Math.min(n, Math.round(lo + span));
+  if (hi - lo < 5) { lo = Math.max(0, hi - 5); }
+  return [lo, hi];
+}
 
 function renderPriceChart() {
   const host = $("price-chart");
@@ -311,82 +386,90 @@ function renderPriceChart() {
       bars?.reason ? `<br><span class="small">${esc(bars.reason)}</span>` : ""
     }<br><span class="small">Every other panel is unaffected — the exposure surface does not need bars.</span></div>`;
     $("price-ohlc").textContent = "";
+    $("indicator-panes").innerHTML = "";
     return;
   }
 
-  const n = bars.close.length;
+  const total = bars.close.length;
+  const [lo, hi] = visibleWindow(total);
+  const n = hi - lo;
+
   const W = Math.max(host.clientWidth || 700, 360);
-  const H = 380;
-  const padL = 8, padR = 62, padT = 8, padB = 20;
+  const H = 340;
+  const padL = 8, padR = 66, padT = 8, padB = 18;
   const innerW = W - padL - padR, innerH = H - padT - padB;
 
   const showLevels = $("chk-levels").checked;
+  const fitLevels = $("chk-fit").checked;
   const showVwap = $("chk-vwap").checked;
 
-  // Level annotations. All are prices, so they share the price axis
-  // legitimately — unlike an exposure series, which would not.
+  // Level annotations are prices, so they share the price axis legitimately.
   const levels = !showLevels ? [] : [
     ["call_wall", "Call Wall", "var(--series-call)", false],
     ["put_wall", "Put Wall", "var(--series-put)", false],
     ["gamma_flip", "Gamma Flip", "var(--warning)", true],
     ["max_pain", "Max Pain", "var(--text-muted)", false],
+    ["max_pos_gex", "Max +GEX", "var(--pos)", false],
+    ["max_neg_gex", "Max −GEX", "var(--neg)", false],
+    ["volume_poc", "Vol POC", "var(--text-secondary)", false],
   ].map(([k, label, colour, dashed]) => ({ label, colour, dashed, price: d.levels[k]?.strike }))
    .filter((l) => l.price !== null && l.price !== undefined);
 
-  // y-domain from the bars, expanded to include levels — but capped, so one
-  // distant level cannot flatten the candles into a line.
-  let lo = Math.min(...bars.low), hi = Math.max(...bars.high);
-  const span = Math.max(hi - lo, 1e-6);
-  const capLo = lo - span * 0.75, capHi = hi + span * 0.75;
-  levels.forEach((l) => {
-    if (l.price >= capLo && l.price <= capHi) { lo = Math.min(lo, l.price); hi = Math.max(hi, l.price); }
-    else l.offscale = true;
-  });
-  const pad = (hi - lo) * 0.06 || 1;
-  lo -= pad; hi += pad;
+  const slice = (a) => a.slice(lo, hi);
+  const vHigh = slice(bars.high), vLow = slice(bars.low);
+  const vOpen = slice(bars.open), vClose = slice(bars.close);
+  const vTime = slice(bars.time), vVwap = bars.vwap ? slice(bars.vwap) : null;
 
-  const y = (p) => padT + innerH - ((p - lo) / (hi - lo)) * innerH;
+  let yLo = Math.min(...vLow), yHi = Math.max(...vHigh);
+  const span = Math.max(yHi - yLo, 1e-6);
+
+  if (fitLevels) {
+    // Explicit request: show every level even if the candles compress.
+    levels.forEach((l) => { yLo = Math.min(yLo, l.price); yHi = Math.max(yHi, l.price); });
+  } else {
+    // Otherwise absorb only nearby levels; distant ones get pinned to the
+    // edge below rather than dropped, so a wall is always indicated.
+    const capLo = yLo - span * 0.6, capHi = yHi + span * 0.6;
+    levels.forEach((l) => {
+      if (l.price >= capLo && l.price <= capHi) { yLo = Math.min(yLo, l.price); yHi = Math.max(yHi, l.price); }
+      else l.offscale = l.price > capHi ? "up" : "down";
+    });
+  }
+  const pad = (yHi - yLo) * 0.06 || 1;
+  yLo -= pad; yHi += pad;
+
+  const y = (p) => padT + innerH - ((p - yLo) / (yHi - yLo)) * innerH;
   const bw = innerW / n;
   const body = Math.max(1, Math.min(bw * 0.62, 9));
   const x = (i) => padL + i * bw + bw / 2;
 
   const parts = [];
 
-  // Horizontal price gridlines. The right gutter is shared with the level
-  // tags and the last-price tag, so an axis price is drawn only where none
-  // of those already occupies the row.
   const occupied = levels.filter((l) => !l.offscale).map((l) => y(l.price));
-  occupied.push(y(bars.close[n - 1]));
-  const gridN = 5;
-  for (let g = 0; g <= gridN; g++) {
-    const p = lo + ((hi - lo) * g) / gridN;
-    const gy = y(p);
+  occupied.push(y(vClose[n - 1]));
+  for (let g = 0; g <= 5; g++) {
+    const p = yLo + ((yHi - yLo) * g) / 5, gy = y(p);
     parts.push(`<line class="grid-line" x1="${padL}" x2="${padL + innerW}" y1="${gy}" y2="${gy}"/>`);
     if (!occupied.some((o) => Math.abs(o - gy) < 13)) {
       parts.push(`<text class="axis-label" x="${padL + innerW + 5}" y="${gy + 3}">${priceFmt(Math.round(p * 100) / 100)}</text>`);
     }
   }
 
-  // candles
   for (let i = 0; i < n; i++) {
-    const up = bars.close[i] >= bars.open[i];
+    const up = vClose[i] >= vOpen[i];
     const cls = up ? "candle-up" : "candle-dn";
     const cx = x(i);
-    parts.push(`<line class="wick ${cls}" x1="${cx}" x2="${cx}" y1="${y(bars.high[i])}" y2="${y(bars.low[i])}"/>`);
-    const yo = y(bars.open[i]), yc = y(bars.close[i]);
-    const top = Math.min(yo, yc), h = Math.max(Math.abs(yc - yo), 0.8);
-    parts.push(`<rect class="${cls}" x="${cx - body / 2}" y="${top}" width="${body}" height="${h}"/>`);
+    parts.push(`<line class="wick ${cls}" x1="${cx}" x2="${cx}" y1="${y(vHigh[i])}" y2="${y(vLow[i])}"/>`);
+    const yo = y(vOpen[i]), yc = y(vClose[i]);
+    parts.push(`<rect class="${cls}" x="${cx - body / 2}" y="${Math.min(yo, yc)}" width="${body}" height="${Math.max(Math.abs(yc - yo), 0.8)}"/>`);
   }
 
-  if (showVwap && bars.vwap) {
-    const pts = bars.vwap.map((v, i) => `${x(i)},${y(v)}`).join(" ");
-    parts.push(`<polyline class="vwap-line" points="${pts}"/>`);
-    levels.push({ label: "VWAP", colour: "var(--series-violet)", price: bars.vwap[n - 1] });
+  if (showVwap && vVwap) {
+    parts.push(`<polyline class="vwap-line" points="${vVwap.map((v, i) => `${x(i)},${y(v)}`).join(" ")}"/>`);
+    levels.push({ label: "VWAP", colour: "var(--series-violet)", price: vVwap[n - 1] });
   }
 
-  // Level tags share the right gutter with the axis prices and each other,
-  // so they are laid out rather than drawn where the line falls: name and
-  // price on ONE line, then pushed apart vertically on collision.
+  // In-range levels: line plus a collision-laid-out tag.
   const TAG_H = 11;
   let lastTagY = -Infinity;
   levels.filter((l) => !l.offscale).map((l) => ({ ...l, y: y(l.price) }))
@@ -400,30 +483,184 @@ function renderPriceChart() {
       parts.push(`<text class="level-tag" fill="${t.colour}" x="${padL + innerW + 5}" y="${ty}">${t.label} ${priceFmt(t.price)}</text>`);
     });
 
-  // last price tag on the right axis
-  const lastY = y(bars.close[n - 1]);
-  parts.push(`<g class="last-tag"><rect x="${padL + innerW + 1}" y="${lastY - 7}" width="54" height="14" rx="3"/>
-    <text x="${padL + innerW + 5}" y="${lastY + 3.5}">${bars.close[n - 1].toFixed(2)}</text></g>`);
+  // Off-scale levels pinned to the edge with a direction arrow. "Indicate
+  // the walls" has to hold even when a wall is far from the last price.
+  let upSlot = 0, downSlot = 0;
+  levels.filter((l) => l.offscale).forEach((l) => {
+    const up = l.offscale === "up";
+    const ty = up ? padT + 9 + upSlot++ * 10 : padT + innerH - 3 - downSlot++ * 10;
+    parts.push(`<text class="level-edge" fill="${l.colour}" x="${padL + 4}" y="${ty}">${up ? "▲" : "▼"} ${l.label} ${priceFmt(l.price)}</text>`);
+  });
 
-  // time axis
-  const every = Math.max(1, Math.floor(n / Math.max(4, Math.floor(W / 95))));
+  const lastY = y(vClose[n - 1]);
+  parts.push(`<g class="last-tag"><rect x="${padL + innerW + 1}" y="${lastY - 7}" width="60" height="14" rx="3"/>
+    <text x="${padL + innerW + 5}" y="${lastY + 3.5}">${vClose[n - 1].toFixed(2)}</text></g>`);
+
+  const every = Math.max(1, Math.floor(n / Math.max(4, Math.floor(W / 100))));
+  const daily = ["1D", "1W", "1Mo"].includes(state.bars?.plan?.interval_served);
   for (let i = 0; i < n; i += every) {
-    const t = String(bars.time[i]).slice(11, 16);
-    parts.push(`<text class="axis-label" x="${x(i)}" y="${H - 5}" text-anchor="middle">${t}</text>`);
+    const t = String(vTime[i]);
+    parts.push(`<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="middle">${daily ? t.slice(0, 10) : t.slice(11, 16)}</text>`);
   }
+
+  parts.push(`<rect class="hit" x="${padL}" y="${padT}" width="${innerW}" height="${innerH}"/>`);
 
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Price with exposure levels">${parts.join("")}</svg>`;
+  attachZoom(host.querySelector("svg"), total, padL, innerW);
 
   const i = n - 1;
+  $("price-title").textContent =
+    `${d.instrument} · ${state.bars?.plan?.interval_served || state.interval} · ${state.range}`;
   $("price-ohlc").textContent =
-    `O ${bars.open[i].toFixed(2)}  H ${bars.high[i].toFixed(2)}  L ${bars.low[i].toFixed(2)}  C ${bars.close[i].toFixed(2)}` +
-    (bars.synthetic ? "   · synthetic" : "");
+    `O ${vOpen[i].toFixed(2)}  H ${vHigh[i].toFixed(2)}  L ${vLow[i].toFixed(2)}  C ${vClose[i].toFixed(2)}` +
+    `   ${n} of ${total} bars` + (bars.synthetic ? "   · synthetic" : "");
 
-  const off = levels.filter((l) => l.offscale);
-  if (off.length) {
-    host.insertAdjacentHTML("beforeend",
-      `<div class="muted small" style="margin-top:4px">Off-scale, not drawn: ${off.map((l) => `${l.label} ${priceFmt(l.price)}`).join(" · ")}</div>`);
-  }
+  renderIndicatorPanes(lo, hi, W, padL, padR, innerW);
+}
+
+/* ------------------------------ zoom / pan ------------------------------ */
+
+function attachZoom(svg, total, padL, innerW) {
+  const toIndex = (clientX) => {
+    const r = svg.getBoundingClientRect();
+    const vb = svg.viewBox.baseVal.width;
+    const px = ((clientX - r.left) / r.width) * vb;
+    const [lo, hi] = visibleWindow(total);
+    return lo + ((px - padL) / innerW) * (hi - lo);
+  };
+
+  svg.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const [lo, hi] = visibleWindow(total);
+    const anchor = Math.min(Math.max(toIndex(ev.clientX), lo), hi);
+    const factor = ev.deltaY > 0 ? 1.18 : 1 / 1.18;      // out : in
+    const newSpan = Math.min(Math.max((hi - lo) * factor, 5), total);
+    // Keep whatever sits under the cursor stationary.
+    const frac = (anchor - lo) / Math.max(hi - lo, 1);
+    let nlo = anchor - frac * newSpan;
+    nlo = Math.min(Math.max(nlo, 0), total - newSpan);
+    state.zoom = newSpan >= total ? null : [nlo, nlo + newSpan];
+    renderPriceChart();
+  }, { passive: false });
+
+  let dragging = null;
+  svg.addEventListener("pointerdown", (ev) => {
+    const [lo, hi] = visibleWindow(total);
+    dragging = { x: ev.clientX, lo, hi };
+    svg.classList.add("panning");
+    svg.setPointerCapture(ev.pointerId);
+  });
+  svg.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    const r = svg.getBoundingClientRect();
+    const span = dragging.hi - dragging.lo;
+    const barsPerPx = span / (innerW * (r.width / svg.viewBox.baseVal.width));
+    const shift = -(ev.clientX - dragging.x) * barsPerPx;
+    let nlo = Math.min(Math.max(dragging.lo + shift, 0), total - span);
+    state.zoom = span >= total ? null : [nlo, nlo + span];
+    renderPriceChart();
+  });
+  const stop = () => { dragging = null; svg.classList.remove("panning"); };
+  svg.addEventListener("pointerup", stop);
+  svg.addEventListener("pointercancel", stop);
+  svg.addEventListener("pointerleave", stop);
+}
+
+function zoomBy(factor) {
+  const total = state.bars?.close?.length || 0;
+  if (!total) return;
+  const [lo, hi] = visibleWindow(total);
+  const mid = (lo + hi) / 2;
+  const span = Math.min(Math.max((hi - lo) * factor, 5), total);
+  let nlo = Math.min(Math.max(mid - span / 2, 0), total - span);
+  state.zoom = span >= total ? null : [nlo, nlo + span];
+  renderPriceChart();
+}
+
+/* --------------------------- indicator panes ---------------------------- */
+
+const IND_SPECS = [
+  { key: "rsi", title: "RSI (14)", height: 62,
+    series: [["rsi", "var(--series-violet)"]], domain: [0, 100], guides: [30, 70] },
+  { key: "macd", title: "MACD (12,26,9)", height: 68,
+    series: [["macd", "var(--series-call)"], ["macd_signal", "var(--series-put)"]],
+    histogram: "macd_histogram", zero: true },
+  { key: "adx", title: "ADX / DI (14)", height: 62,
+    series: [["adx", "var(--text-primary)"], ["di_plus", "var(--pos)"], ["di_minus", "var(--neg)"]],
+    domain: [0, 100], guides: [25] },
+];
+
+function renderIndicatorPanes(lo, hi, W, padL, padR, innerW) {
+  const host = $("indicator-panes");
+  const ind = state.bars?.indicators;
+  if (!ind) { host.innerHTML = ""; return; }
+
+  const n = hi - lo;
+  const x = (i) => padL + i * (innerW / n) + (innerW / n) / 2;
+  const blocks = [];
+
+  IND_SPECS.filter((spec) => state.indicators[spec.key]).forEach((spec) => {
+    const H = spec.height, top = 12, bot = 4;
+    const inner = H - top - bot;
+    const cols = spec.series.map(([k]) => (ind[k] || []).slice(lo, hi));
+    const hist = spec.histogram ? (ind[spec.histogram] || []).slice(lo, hi) : null;
+
+    let vals = cols.flat().filter((v) => v !== null && isFinite(v));
+    if (hist) vals = vals.concat(hist.filter((v) => v !== null && isFinite(v)));
+    if (!vals.length) return;
+
+    let [dlo, dhi] = spec.domain || [Math.min(...vals), Math.max(...vals)];
+    if (!spec.domain) {
+      const m = Math.max(Math.abs(dlo), Math.abs(dhi)) || 1;
+      [dlo, dhi] = spec.zero ? [-m, m] : [dlo, dhi];
+    }
+    const y = (v) => top + inner - ((v - dlo) / Math.max(dhi - dlo, 1e-9)) * inner;
+
+    const parts = [];
+    (spec.guides || []).forEach((g) =>
+      parts.push(`<line class="grid-line" x1="${padL}" x2="${padL + innerW}" y1="${y(g)}" y2="${y(g)}"/>`));
+    if (spec.zero) parts.push(`<line class="zero-line" x1="${padL}" x2="${padL + innerW}" y1="${y(0)}" y2="${y(0)}"/>`);
+
+    if (hist) {
+      const bw = Math.max(1, innerW / n - 1);
+      hist.forEach((v, i) => {
+        if (v === null) return;
+        const y0 = y(0), yv = y(v);
+        parts.push(`<rect class="bar" fill="${v >= 0 ? "var(--pos)" : "var(--neg)"}" x="${x(i) - bw / 2}"
+          y="${Math.min(y0, yv)}" width="${bw}" height="${Math.max(Math.abs(yv - y0), 0.6)}" opacity="0.45"/>`);
+      });
+    }
+
+    spec.series.forEach(([key, colour], si) => {
+      // Break the polyline wherever the indicator has no value yet, rather
+      // than drawing a straight line across the warm-up period.
+      const pts = cols[si].map((v, i) => (v === null || !isFinite(v)) ? null : `${x(i)},${y(v)}`);
+      let run = [];
+      pts.forEach((pt) => {
+        if (pt) run.push(pt);
+        else if (run.length) { parts.push(`<polyline class="ind-line" stroke="${colour}" points="${run.join(" ")}"/>`); run = []; }
+      });
+      if (run.length) parts.push(`<polyline class="ind-line" stroke="${colour}" points="${run.join(" ")}"/>`);
+    });
+
+    const last = spec.series
+      .map(([k, c], i) => {
+        const v = [...cols[i]].reverse().find((x) => x !== null && isFinite(x));
+        return v === undefined ? null : `<tspan fill="${c}">${k.replace("macd_", "").replace("di_", "DI")} ${v.toFixed(1)}</tspan>`;
+      })
+      .filter(Boolean).join('<tspan fill="var(--text-muted)">  ·  </tspan>');
+
+    parts.push(`<text class="ind-title" x="${padL}" y="9">${spec.title}</text>`);
+    parts.push(`<text class="axis-label" x="${padL + innerW + 5}" y="9">${dhi.toFixed(0)}</text>`);
+    parts.push(`<text class="axis-label" x="${padL + innerW + 5}" y="${H - 2}">${dlo.toFixed(0)}</text>`);
+    // Right-aligned: a fixed left offset collides with the longer titles
+    // ("MACD (12,26,9)") at narrow widths.
+    parts.push(`<text class="ind-title" x="${padL + innerW - 4}" y="9" text-anchor="end">${last}</text>`);
+
+    blocks.push(`<div class="ind-pane"><svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${spec.title}">${parts.join("")}</svg></div>`);
+  });
+
+  host.innerHTML = blocks.join("");
 }
 
 /* ------------------- horizontal tabbed exposure by strike --------------- */
@@ -953,7 +1190,12 @@ $("f-symbol").addEventListener("change", () => {
 ["view-terminal-btn", "view-columns-btn"].forEach((id) =>
   $(id).addEventListener("click", () => setView($(id).dataset.view)));
 
-["chk-levels", "chk-vwap"].forEach((id) => $(id).addEventListener("change", renderPriceChart));
+["chk-levels", "chk-vwap", "chk-fit"].forEach((id) =>
+  $(id).addEventListener("change", renderPriceChart));
+
+$("zoom-in").addEventListener("click", () => zoomBy(1 / 1.5));
+$("zoom-out").addEventListener("click", () => zoomBy(1.5));
+$("zoom-reset").addEventListener("click", () => { state.zoom = null; renderPriceChart(); });
 
 $("btn-table").addEventListener("click", () => {
   state.showTable = !state.showTable;

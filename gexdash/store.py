@@ -24,7 +24,9 @@ import numpy as np
 from .chain import OptionChain, build_chain
 from .instruments import Instrument, get as get_instrument
 
-DEFAULT_DB = Path(os.environ.get("GEXDASH_HOME", Path.home() / ".gexdash")) / "chains.db"
+def default_db_path() -> Path:
+    """Resolved per call, so GEXDASH_HOME is honoured after import."""
+    return Path(os.environ.get("GEXDASH_HOME", Path.home() / ".gexdash")) / "chains.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS breadth_sample (
@@ -51,7 +53,7 @@ CREATE TABLE IF NOT EXISTS chain_snapshot (
 
 class ChainStore:
     def __init__(self, path: Path | str | None = None) -> None:
-        self.path = Path(path or DEFAULT_DB)
+        self.path = Path(path) if path else default_db_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)

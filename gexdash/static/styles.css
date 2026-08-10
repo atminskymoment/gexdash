@@ -494,3 +494,40 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
   font-size: 10.5px; color: var(--critical); line-height: 1.35;
   border-left: 2px solid var(--critical); padding-left: 7px;
 }
+
+
+/* ─────────────────────── chart controls & zoom ────────────────────────── */
+
+.chart-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 2px; }
+
+.seg { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.seg button {
+  border: none; border-radius: 0; min-height: 24px; padding: 2px 8px;
+  font-size: 10.5px; background: transparent; color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-selected="true"] {
+  background: color-mix(in srgb, var(--series-call) 15%, transparent);
+  color: var(--series-call); font-weight: 650;
+}
+.seg button:disabled { opacity: 0.32; cursor: not-allowed; }
+.seg button:disabled:hover { border-color: var(--border); }
+
+#price-chart svg, #indicator-panes svg { cursor: crosshair; touch-action: none; }
+#price-chart svg.panning { cursor: grabbing; }
+
+/* A level outside the visible price range is pinned to the edge rather than
+   dropped — "indicate the walls" means always show where they are. */
+.level-edge { font-size: 8.5px; font-weight: 680; paint-order: stroke fill;
+              stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round; }
+
+.ind-pane { margin-top: 2px; }
+.ind-title { font-size: 10px; font-weight: 620; color: var(--text-secondary); letter-spacing: 0.04em; }
+.ind-line { fill: none; stroke-width: 1.4; }
+.ind-band { fill: var(--text-primary); opacity: 0.05; }
+
+
+/* The card heading is uppercased, which turns the "1m" interval into "1M" --
+   and "1M" is one *month* in the range selector. Case is load-bearing here. */
+#price-title { text-transform: none; letter-spacing: 0.02em; }

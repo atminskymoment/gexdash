@@ -43,6 +43,7 @@ from ..bars import PriceBars, build_bars
 from ..breadth import BreadthSnapshot, build_snapshot, BREADTH_SYMBOLS
 from ..chain import OptionChain, build_chain
 from ..sessions import exchange_today, previous_session
+from .. import instruments as _instruments
 from ..instruments import Instrument
 from .base import BreadthUnavailable, NotAuthenticated, PriceHistoryUnavailable, ProviderError
 
@@ -50,12 +51,31 @@ AUTH_URL = "https://api.schwabapi.com/v1/oauth/authorize"
 TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
 BASE_URL = "https://api.schwabapi.com/marketdata/v1"
 
-DEFAULT_TOKEN_PATH = Path(os.environ.get("GEXDASH_HOME", Path.home() / ".gexdash")) / "schwab_token.json"
+def default_token_path() -> Path:
+    """Where the token lives, resolved per call.
+
+    A module-level constant would bind GEXDASH_HOME at import, which makes
+    the setting un-overridable afterwards -- and, less obviously, let the
+    test suite read the developer's real token instead of a temporary one.
+    """
+    return Path(os.environ.get("GEXDASH_HOME", Path.home() / ".gexdash")) / "schwab_token.json"
 
 log = logging.getLogger(__name__)
 
+#: Breadth metrics where a literal 0.0 means "not populated" rather than a
+#: reading. TICK is deliberately excluded -- zero is a legitimate TICK.
+_ZERO_MEANS_MISSING = frozenset({"advancing", "declining", "net", "up_volume", "down_volume", "trin"})
+
 #: Schwab returns this in numeric fields when a value is unavailable.
 _SENTINEL = -999.0
+
+#: A second, undocumented sentinel seen on the breadth feed: 92233720368.54776
+#: is Java's Long.MAX_VALUE scaled by 1e8, i.e. an unset 64-bit field rather
+#: than a quantity. Observed live on $UVOL, where taking it at face value
+#: would report 92 billion shares of advancing volume and poison every ratio
+#: derived from it.
+_LONG_MAX_SENTINELS = (9223372036854775807.0, 92233720368.54776)
+_SENTINEL_REL_TOL = 1e-9
 
 
 def _clean(value, default=None):
@@ -68,6 +88,9 @@ def _clean(value, default=None):
         return default
     if f == _SENTINEL or f != f:  # sentinel or NaN
         return default
+    for sentinel in _LONG_MAX_SENTINELS:
+        if abs(f - sentinel) <= abs(sentinel) * _SENTINEL_REL_TOL:
+            return default
     return f
 
 
@@ -84,7 +107,7 @@ class SchwabAuth:
         self.app_key = app_key or os.environ.get("SCHWAB_APP_KEY", "")
         self.app_secret = app_secret or os.environ.get("SCHWAB_APP_SECRET", "")
         self.callback_url = callback_url or os.environ.get("SCHWAB_CALLBACK_URL", "https://127.0.0.1:8182")
-        self.token_path = Path(token_path or DEFAULT_TOKEN_PATH)
+        self.token_path = Path(token_path) if token_path else default_token_path()
         self._token: dict | None = None
 
     # ------------------------------------------------------------------
@@ -97,12 +120,75 @@ class SchwabAuth:
         raw = f"{self.app_key}:{self.app_secret}".encode()
         return "Basic " + base64.b64encode(raw).decode()
 
-    def _save(self, token: dict) -> None:
+    #: Schwab refresh tokens live 7 days and CANNOT be renewed programmatically
+    #: -- the only way past it is another browser consent. Tracked so the
+    #: deadline is visible in advance rather than discovered by a failed call.
+    REFRESH_TOKEN_LIFETIME_DAYS = 7
+
+    def _save(self, token: dict, *, new_consent: bool = False) -> None:
         token["expires_at"] = time.time() + float(token.get("expires_in", 1800)) - 60
+
+        # The refresh token's clock starts at consent and is NOT reset by
+        # refreshing the access token, so carry the original timestamp
+        # forward. Resetting it here would quietly hide the real deadline.
+        if new_consent:
+            token["refresh_issued_at"] = time.time()
+        elif "refresh_issued_at" not in token:
+            # Read the prior stamp from DISK, not just the in-memory cache.
+            # Depending on self._token being populated is an implicit
+            # precondition, and when it is not met the clock silently resets
+            # to "7 days left" forever -- hiding the exact deadline this is
+            # here to expose.
+            prior = (self._load() or {}).get("refresh_issued_at")
+            token["refresh_issued_at"] = prior or time.time()
+        token["refresh_expires_at"] = (
+            token["refresh_issued_at"] + self.REFRESH_TOKEN_LIFETIME_DAYS * 86400
+        )
+
         self.token_path.parent.mkdir(parents=True, exist_ok=True)
         self.token_path.write_text(json.dumps(token, indent=2))
         self.token_path.chmod(0o600)
+
+        # Under sudo (the privileged-port login path) this file would be
+        # owned by root and unreadable by the normal app.
+        from ..config import restore_sudo_ownership
+        restore_sudo_ownership(self.token_path, self.token_path.parent)
+
         self._token = token
+
+    def status(self) -> dict:
+        """Authentication state, safe to print. No secret material."""
+        token = self._load()
+        now = time.time()
+        if not token:
+            return {
+                "configured": self.configured,
+                "authenticated": False,
+                "token_path": str(self.token_path),
+                # Included even with no token: a callback mismatch is the most
+                # common reason there IS no token, so this is precisely when
+                # you want to see it.
+                "callback_url": self.callback_url,
+                "detail": "not connected -- open /connect, or run `python -m gexdash.providers.schwab login`",
+            }
+
+        access_left = token.get("expires_at", 0) - now
+        refresh_left = token.get("refresh_expires_at", 0) - now
+        return {
+            "configured": self.configured,
+            "authenticated": refresh_left > 0,
+            "token_path": str(self.token_path),
+            "access_token_valid": access_left > 0,
+            "access_expires_in_minutes": round(access_left / 60, 1),
+            "refresh_expires_in_days": round(refresh_left / 86400, 2),
+            "refresh_expired": refresh_left <= 0,
+            "callback_url": self.callback_url,
+            "detail": (
+                "refresh token expired -- re-run `python -m gexdash.providers.schwab login`"
+                if refresh_left <= 0
+                else f"re-login needed within {refresh_left / 86400:.1f} days"
+            ),
+        }
 
     def _load(self) -> dict | None:
         if self._token is not None:
@@ -121,12 +207,33 @@ class SchwabAuth:
         return f"{AUTH_URL}?client_id={self.app_key}&redirect_uri={self.callback_url}"
 
     def exchange_code(self, redirected_url: str) -> dict:
-        """Exchange the ``code`` in the pasted redirect URL for tokens."""
+        """Exchange the ``code`` in a pasted redirect URL for tokens."""
         qs = parse_qs(urlparse(redirected_url).query)
         code = qs.get("code", [None])[0]
         if not code:
             raise ProviderError(f"no ?code= found in {redirected_url!r}")
+        return self.exchange_code_value(code)
 
+    def redirect_candidates(self) -> list[str]:
+        """The configured callback first, then trailing-slash variants.
+
+        Schwab's *authorize* endpoint tolerates a trailing-slash difference
+        while its *token* endpoint does not, so a callback that sails through
+        step 1 can fail step 2 with a bare "invalid_grant" that names nothing.
+        Trying the variants against one code beats one browser round-trip per
+        guess -- a rejected redirect_uri does not consume the code.
+        """
+        base = self.callback_url
+        variants = [base, base.rstrip("/"), base.rstrip("/") + "/"]
+        seen, out = set(), []
+        for v in variants:
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
+
+    def exchange_code_value(self, code: str, *, redirect_uri: str | None = None) -> dict:
+        """Exchange an already-extracted authorization code for tokens."""
         resp = httpx.post(
             TOKEN_URL,
             headers={
@@ -136,14 +243,14 @@ class SchwabAuth:
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": self.callback_url,
+                "redirect_uri": redirect_uri or self.callback_url,
             },
             timeout=30,
         )
         if resp.status_code != 200:
             raise ProviderError(f"token exchange failed [{resp.status_code}]: {resp.text}")
         token = resp.json()
-        self._save(token)
+        self._save(token, new_consent=True)   # starts the 7-day clock
         return token
 
     def refresh(self) -> dict:
@@ -161,9 +268,14 @@ class SchwabAuth:
             timeout=30,
         )
         if resp.status_code != 200:
+            age = ""
+            issued = (token or {}).get("refresh_issued_at")
+            if issued:
+                age = f" The refresh token was issued {(time.time() - issued) / 86400:.1f} days ago."
             raise NotAuthenticated(
-                "refresh failed -- the 7-day refresh token has likely expired. "
-                f"Re-run `python -m gexdash.providers.schwab login`. [{resp.status_code}] {resp.text}"
+                "refresh failed -- the 7-day refresh token has likely expired."
+                f"{age} Re-run `python -m gexdash.providers.schwab login`. "
+                f"[{resp.status_code}] {resp.text[:200]}"
             )
         new = resp.json()
         # Schwab does not always echo the refresh token back.
@@ -173,10 +285,23 @@ class SchwabAuth:
 
     def access_token(self) -> str:
         if not self.configured:
-            raise NotAuthenticated("SCHWAB_APP_KEY / SCHWAB_APP_SECRET are not set")
+            raise NotAuthenticated(
+                "SCHWAB_APP_KEY / SCHWAB_APP_SECRET are not set. If they are in a .env, "
+                "check that gexdash.config.load_dotenv() ran before the provider was built."
+            )
         token = self._load()
         if not token:
             raise NotAuthenticated("not logged in; run `python -m gexdash.providers.schwab login`")
+
+        # Check the 7-day clock before spending a round trip on a refresh
+        # that cannot succeed.
+        refresh_expires = token.get("refresh_expires_at")
+        if refresh_expires and time.time() >= refresh_expires:
+            raise NotAuthenticated(
+                "the 7-day refresh token has expired -- Schwab requires a new browser "
+                "consent. Run `python -m gexdash.providers.schwab login`."
+            )
+
         if time.time() >= token.get("expires_at", 0):
             token = self.refresh()
         return token["access_token"]
@@ -218,6 +343,7 @@ class SchwabProvider:
         for field in ("lastPrice", "mark", "closePrice"):
             value = _clean(quote.get(field))
             if value:
+                self._assert_plausible(instrument, value, "quote")
                 return value
         raise ProviderError(f"no usable price in quote for {instrument.quote_symbol}: {quote}")
 
@@ -237,18 +363,11 @@ class SchwabProvider:
                 instrument.chain_symbol,
             )
 
-        params = {
-            "symbol": instrument.chain_symbol,
-            "contractType": "ALL",
-            "includeUnderlyingQuote": "true",
-            "strategy": "SINGLE",
-        }
-        if max_dte is not None:
-            today = exchange_today()
-            params["fromDate"] = today.isoformat()
-            params["toDate"] = (today.fromordinal(today.toordinal() + int(max_dte) + 1)).isoformat()
-
-        data = self._get("/chains", params)
+        today = exchange_today()
+        span_days = int(max_dte) + 1 if max_dte is not None else 400
+        data = self._fetch_chain_span(
+            instrument, today, date.fromordinal(today.toordinal() + span_days)
+        )
         if data.get("status") == "FAILED":
             raise ProviderError(f"chain request failed for {instrument.chain_symbol}: {data}")
 
@@ -258,6 +377,7 @@ class SchwabProvider:
             spot = _clean(underlying.get("last")) or _clean(underlying.get("mark"))
         if spot is None:
             raise ProviderError("chain response carried no underlying price")
+        self._assert_plausible(instrument, spot, "chain")
 
         rows = list(self._iter_contracts(data.get("callExpDateMap", {}), "C"))
         rows += list(self._iter_contracts(data.get("putExpDateMap", {}), "P"))
@@ -292,26 +412,39 @@ class SchwabProvider:
         except ProviderError as exc:
             raise BreadthUnavailable(str(exc)) from None
 
+        invalid = set(data.get("errors", {}).get("invalidSymbols", []) or [])
+
         values: dict[str, float | None] = {}
         unresolved: dict[str, str] = {}
         for metric, symbol in table.items():
             node = data.get(symbol)
             value = None
-            if node:
+            if node and symbol not in invalid:
                 quote = node.get("quote", node)
                 for fld in ("lastPrice", "mark", "closePrice", "netChange"):
                     value = _clean(quote.get(fld))
                     if value is not None:
                         break
+
+            # An exchange series sitting at exactly 0.0 is not populated on
+            # this entitlement. Observed live: every Nasdaq internal returns
+            # 0.0, and $ADD returns 0.0 while $ADVN/$DECN carry real counts.
+            # Treating those zeros as data would render "0 advancing issues"
+            # and a net that contradicts the counts beside it.
+            if value == 0.0 and metric in _ZERO_MEANS_MISSING:
+                value = None
+
             if value is None:
                 unresolved[metric] = symbol
             values[metric] = value
 
-        if values.get("advancing") is None and values.get("declining") is None:
+        if not values.get("advancing") and not values.get("declining"):
             raise BreadthUnavailable(
-                f"{exchange} breadth symbols did not resolve ({table['advancing']}, "
-                f"{table['declining']}). This entitlement may not cover exchange "
-                "internals, or the tickers differ -- see BREADTH_SYMBOLS."
+                f"{exchange} advance/decline is not populated on this entitlement "
+                f"({table['advancing']}, {table['declining']} returned "
+                f"{'invalid symbol' if table['advancing'] in invalid else 'no value'}). "
+                "Schwab carries the NYSE series; the Nasdaq equivalents resolve but "
+                "return zeros. See BREADTH_SYMBOLS in gexdash/breadth.py."
             )
 
         if unresolved:
@@ -320,13 +453,18 @@ class SchwabProvider:
         return build_snapshot(exchange, values, unresolved=unresolved)
 
     def get_price_history(
-        self, instrument: Instrument, *, interval_minutes: int = 1, lookback_hours: float = 7.0
+        self,
+        instrument: Instrument,
+        *,
+        interval_minutes: int = 1,
+        lookback_hours: float = 7.0,
+        plan=None,
     ) -> PriceBars:
-        """Intraday candles from /marketdata/v1/pricehistory.
+        """Candles from /marketdata/v1/pricehistory.
 
-        Optional capability: failures raise PriceHistoryUnavailable so the
-        dashboard degrades to "no chart" rather than to an error. The futures
-        roots carry the same unverified caveat as their chains.
+        With a :class:`~gexdash.history.Plan` the range/interval vocabulary
+        drives the request; without one it falls back to the original
+        minutes-and-hours form so existing callers keep working.
         """
         if instrument.is_future:
             raise PriceHistoryUnavailable(
@@ -335,47 +473,125 @@ class SchwabProvider:
                 "continuous-contract alias. Use a dated root or a CME-carrying provider."
             )
 
-        # Schwab only offers a fixed ladder of minute frequencies.
-        freq = min((1, 5, 10, 15, 30), key=lambda f: abs(f - interval_minutes))
+        if plan is not None:
+            params = {
+                "symbol": instrument.quote_symbol,
+                "periodType": plan.period_type,
+                "period": plan.period,
+                "frequencyType": plan.frequency_type,
+                "frequency": plan.frequency,
+                "needExtendedHoursData": "true" if plan.frequency_type == "minute" else "false",
+            }
+            served_minutes = plan.frequency if plan.frequency_type == "minute" else 0
+        else:
+            freq = min((1, 5, 10, 15, 30), key=lambda f: abs(f - interval_minutes))
+            params = {
+                "symbol": instrument.quote_symbol,
+                "periodType": "day", "period": 1,
+                "frequencyType": "minute", "frequency": freq,
+                "needExtendedHoursData": "true",
+            }
+            served_minutes = freq
+
         try:
-            data = self._get(
-                "/pricehistory",
-                {
-                    "symbol": instrument.quote_symbol,
-                    "periodType": "day",
-                    "period": 1,
-                    "frequencyType": "minute",
-                    "frequency": freq,
-                    "needExtendedHoursData": "true",
-                },
-            )
+            data = self._get("/pricehistory", params)
         except ProviderError as exc:
             raise PriceHistoryUnavailable(str(exc)) from None
 
         if data.get("empty") or not data.get("candles"):
-            raise PriceHistoryUnavailable(f"no candles returned for {instrument.quote_symbol}")
+            raise PriceHistoryUnavailable(
+                f"no candles returned for {instrument.quote_symbol} "
+                f"({params['periodType']}/{params['period']} "
+                f"{params['frequencyType']}/{params['frequency']})"
+            )
 
         candles = data["candles"]
-        # Trim to the requested window; Schwab returns a whole session.
-        wanted = int(lookback_hours * 60 / max(freq, 1))
-        candles = candles[-wanted:] if wanted > 0 else candles
+        if plan is None:
+            wanted = int(lookback_hours * 60 / max(served_minutes, 1))
+            candles = candles[-wanted:] if wanted > 0 else candles
 
-        return build_bars(
+        bars = build_bars(
             instrument,
             [
-                {
-                    "time": c["datetime"],          # epoch millis
-                    "open": c["open"],
-                    "high": c["high"],
-                    "low": c["low"],
-                    "close": c["close"],
-                    "volume": c.get("volume", 0),
-                }
+                {"time": c["datetime"], "open": c["open"], "high": c["high"],
+                 "low": c["low"], "close": c["close"], "volume": c.get("volume", 0)}
                 for c in candles
             ],
-            interval_minutes=freq,
-            meta={"provider": "schwab", "symbol": instrument.quote_symbol},
+            interval_minutes=served_minutes or 1440,
+            meta={"provider": "schwab", "symbol": instrument.quote_symbol,
+                  "provider_request": params},
         )
+
+        if plan is not None and plan.aggregate_minutes:
+            from ..history import aggregate
+            bars = aggregate(bars, plan.aggregate_minutes)
+        return bars
+
+    #: Recursion cap for the date-bisection below. 2^6 = 64 slices is far
+    #: more than any 60-day window needs; a deeper split means something
+    #: other than response size is failing.
+    _MAX_CHAIN_SPLITS = 6
+
+    def _fetch_chain_span(self, instrument: Instrument, start: date, end: date, depth: int = 0) -> dict:
+        """Fetch a chain over a date span, bisecting if the response is too big.
+
+        Schwab's gateway rejects oversized responses with a 502
+        ``protocol.http.TooBigBody``. A full SPX or NDX chain across a 60-day
+        window comfortably exceeds it -- thousands of strikes times a dozen
+        expiries -- while SPY and QQQ fit.
+
+        The obvious fix is ``strikeCount``, but that silently truncates the
+        wings, and the wings are where put walls live: the aggregate would
+        come back smaller with nothing to say it had. Splitting by date and
+        merging returns the *complete* chain, at the cost of a few extra
+        requests on the two big index symbols.
+        """
+        params = {
+            "symbol": instrument.chain_symbol,
+            "contractType": "ALL",
+            "includeUnderlyingQuote": "true",
+            "strategy": "SINGLE",
+            "fromDate": start.isoformat(),
+            "toDate": end.isoformat(),
+        }
+        try:
+            return self._get("/chains", params)
+        except ProviderError as exc:
+            too_big = "TooBigBody" in str(exc) or "Body buffer overflow" in str(exc)
+            if not too_big or depth >= self._MAX_CHAIN_SPLITS or (end - start).days < 1:
+                raise
+
+        mid_ord = start.toordinal() + max((end.toordinal() - start.toordinal()) // 2, 1)
+        mid = date.fromordinal(mid_ord)
+        log.info("%s chain too large for %s..%s; splitting at %s", instrument.key, start, end, mid)
+        left = self._fetch_chain_span(instrument, start, mid, depth + 1)
+        right = self._fetch_chain_span(instrument, date.fromordinal(mid_ord + 1), end, depth + 1)
+        return self._merge_chain_responses(left, right)
+
+    @staticmethod
+    def _merge_chain_responses(left: dict, right: dict) -> dict:
+        """Combine two chain payloads.
+
+        The expiry maps are keyed ``"YYYY-MM-DD:DTE"``, and the date slices do
+        not overlap, so a shallow merge per side is enough. Strike maps within
+        a shared expiry key are merged too, in case a boundary lands mid-expiry.
+        """
+        merged = dict(left)
+        for side in ("callExpDateMap", "putExpDateMap"):
+            combined = dict(left.get(side) or {})
+            for exp_key, strikes in (right.get(side) or {}).items():
+                if exp_key in combined:
+                    combined[exp_key] = {**combined[exp_key], **strikes}
+                else:
+                    combined[exp_key] = strikes
+            merged[side] = combined
+
+        # Prefer whichever slice actually carried an underlying price.
+        if not _clean(merged.get("underlyingPrice")):
+            merged["underlyingPrice"] = right.get("underlyingPrice")
+        if not merged.get("underlying"):
+            merged["underlying"] = right.get("underlying")
+        return merged
 
     @staticmethod
     def _iter_contracts(exp_map: dict, right: str):
@@ -403,36 +619,247 @@ class SchwabProvider:
                     }
 
     @staticmethod
+    def _assert_plausible(instrument: Instrument, spot: float, what: str) -> None:
+        """Refuse a price that cannot belong to this instrument.
+
+        A root that resolves to the wrong security is the worst failure this
+        client can have, because nothing downstream would notice: the greeks,
+        the multiplier and the whole exposure surface would be computed
+        correctly for an instrument nobody asked about.
+        """
+        lo, hi = instrument.plausible_spot
+        if not (lo <= spot <= hi):
+            raise ProviderError(
+                f"{instrument.key} {what} returned {spot:,.2f}, outside the plausible band "
+                f"{lo:,.0f}-{hi:,.0f}. The symbol {instrument.chain_symbol!r} has almost "
+                f"certainly resolved to a different security -- Schwab's bare 'ES', for "
+                f"instance, is Eversource Energy."
+            )
+
+    @staticmethod
     def _infer_oi_date() -> date:
         """OCC publishes OI before the open for the prior session."""
         return previous_session()
 
 
-def _login_cli() -> int:
+def _extract_code(text: str) -> str:
+    """Pull the auth code out of a pasted redirect URL, or accept a bare code.
+
+    Schwab's ``code`` is URL-encoded and ends in ``@`` once decoded, which
+    trips people up when they hand-edit it -- so take the whole URL wherever
+    possible and let urllib do the decoding.
+    """
+    text = text.strip().strip("'\"")
+    if not text:
+        return ""
+
+    parsed = urlparse(text)
+    if parsed.scheme or parsed.query or "?" in text:
+        # It is a URL. If it carries no ?code= there is nothing to extract --
+        # returning the whole URL as if it were the code would send the
+        # entire address to the token endpoint and produce a baffling
+        # invalid_grant.
+        return parse_qs(parsed.query).get("code", [""])[0]
+
+    return text                      # a bare code, pasted on its own
+
+
+def _login_cli(argv: list[str]) -> int:
+    """Exchange an authorization code for tokens.
+
+    Works three ways, because ``input()`` raises EOFError the moment stdin is
+    not a terminal -- which is every non-interactive shell, CI job and
+    container:
+
+        python -m gexdash.providers.schwab login '<redirect url>'
+        echo '<redirect url>' | python -m gexdash.providers.schwab login
+        python -m gexdash.providers.schwab login          # interactive prompt
+    """
     auth = SchwabAuth()
     if not auth.configured:
-        print("Set SCHWAB_APP_KEY and SCHWAB_APP_SECRET first.", file=sys.stderr)
+        print("SCHWAB_APP_KEY / SCHWAB_APP_SECRET are not set.", file=sys.stderr)
+        print("Check your .env sits at the repo root; `status` shows what resolved.", file=sys.stderr)
         return 1
 
-    url = auth.authorize_url()
-    print("\n1. Opening Schwab authorization in your browser:")
-    print(f"   {url}\n")
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
-    print("2. Log in and approve.")
-    print("3. Your browser will fail to load the callback -- that is expected.")
-    print("   Copy the FULL url from the address bar and paste it below.\n")
+    raw = argv[0] if argv else ""
 
-    redirected = input("Redirect URL: ").strip()
-    auth.exchange_code(redirected)
+    if not raw and not sys.stdin.isatty():
+        raw = sys.stdin.read()               # piped
+
+    if not raw and sys.stdin.isatty():
+        print("\n1. Opening Schwab authorization in your browser:")
+        print(f"   {auth.authorize_url()}\n")
+        try:
+            webbrowser.open(auth.authorize_url())
+        except Exception:
+            pass
+        print("2. Log in and approve.")
+        print("3. The browser will fail to load the callback -- that is expected.")
+        print("   Copy the FULL url from the address bar and paste it below.\n")
+        raw = input("Redirect URL: ")
+
+    code = _extract_code(raw)
+    if not code:
+        print("\nNo authorization code supplied. Two steps:\n", file=sys.stderr)
+        print("  1. Open this and approve:\n", file=sys.stderr)
+        print(f"     {auth.authorize_url()}\n", file=sys.stderr)
+        print("  2. Copy the full URL the browser lands on and run:\n", file=sys.stderr)
+        print("     python -m gexdash.providers.schwab login '<paste it here>'\n", file=sys.stderr)
+        print("  The code is single-use and expires within minutes. Piping it via", file=sys.stderr)
+        print("  stdin keeps it out of shell history:", file=sys.stderr)
+        print("     pbpaste | python -m gexdash.providers.schwab login\n", file=sys.stderr)
+        return 2
+
+    candidates = auth.redirect_candidates()
+    errors: list[tuple[str, str]] = []
+    accepted = None
+    for candidate in candidates:
+        try:
+            auth.exchange_code_value(code, redirect_uri=candidate)
+            accepted = candidate
+            break
+        except ProviderError as exc:
+            errors.append((candidate, str(exc)[:180]))
+
+    if accepted is None:
+        print("\nToken exchange failed for every redirect_uri form tried:\n", file=sys.stderr)
+        for candidate, err in errors:
+            print(f"  {candidate!r}\n      {err}\n", file=sys.stderr)
+        print("Credentials are not the problem if `status` showed Basic auth accepted.", file=sys.stderr)
+        print("Remaining causes, in order:", file=sys.stderr)
+        print("  1. The app is not 'Ready For Use' on developer.schwab.com. An app still", file=sys.stderr)
+        print("     'Approved - Pending' authorizes fine but cannot exchange codes.", file=sys.stderr)
+        print("  2. The code was already used -- each one works exactly once.", file=sys.stderr)
+        print("  3. The registered callback differs from all of the above forms.", file=sys.stderr)
+        return 1
+
+    if accepted != auth.callback_url:
+        print(f"\nNOTE: the configured callback {auth.callback_url!r} was rejected;", flush=True)
+        print(f"      {accepted!r} was accepted. Update SCHWAB_CALLBACK_URL in .env to match.", flush=True)
+
+    st = auth.status()
     print(f"\nSaved token to {auth.token_path}")
-    print("Refresh token is valid for 7 days.")
+    print(f"Access token valid for {st['access_expires_in_minutes']:.0f} minutes (auto-refreshed).")
+    print(f"Refresh token valid for {st['refresh_expires_in_days']:.1f} days -- then browser consent again.")
+    return 0
+
+
+def _autologin_cli(argv: list[str]) -> int:
+    """Browser -> local HTTPS listener -> token, with no copy-paste.
+
+    Exchanges the code inside the redirect handler, so it is spent
+    milliseconds after Schwab issues it rather than after a human round-trip.
+    """
+    from ..oauth_loopback import can_bind, capture_code, port_for
+
+    auth = SchwabAuth()
+    if not auth.configured:
+        print("SCHWAB_APP_KEY / SCHWAB_APP_SECRET are not set.", file=sys.stderr)
+        return 1
+
+    port = int(argv[argv.index("--port") + 1]) if "--port" in argv else port_for(auth.callback_url)
+
+    ok, why = can_bind(port)
+    if not ok:
+        print(f"\nCannot listen on 127.0.0.1:{port} -- {why}\n", file=sys.stderr)
+        print("Two ways forward:\n", file=sys.stderr)
+        print("  a) Run this one command with sudo (only the listener needs the port):", file=sys.stderr)
+        print("       sudo -E python -m gexdash.providers.schwab autologin\n", file=sys.stderr)
+        print("  b) Change the callback on developer.schwab.com to a high port, e.g.", file=sys.stderr)
+        print("       https://127.0.0.1:8182/", file=sys.stderr)
+        print("     set the same value in .env, and re-run without sudo. No root at all.", file=sys.stderr)
+        print("\n  Or keep using the paste flow:  pbpaste | ... login", file=sys.stderr)
+        return 2
+
+    exchanged: dict = {}
+
+    def _exchange(code: str):
+        # Runs inside the redirect handler. Try each redirect_uri form,
+        # because Schwab's authorize endpoint tolerates a trailing-slash
+        # difference that its token endpoint rejects.
+        errors = []
+        for candidate in auth.redirect_candidates():
+            try:
+                auth.exchange_code_value(code, redirect_uri=candidate)
+                exchanged["redirect_uri"] = candidate
+                return None
+            except ProviderError as exc:
+                errors.append(f"{candidate}: {str(exc)[:150]}")
+        return " | ".join(errors)
+
+    print(f"\nListening on https://127.0.0.1:{port}/  (self-signed certificate)")
+    print("Your browser will warn about the certificate -- that is expected on a")
+    print("loopback listener. Choose Advanced -> Proceed so the redirect can land.\n")
+    print("Opening Schwab authorization...")
+
+    outcome = capture_code(auth.authorize_url(), port, on_code=_exchange)
+
+    if outcome["error"]:
+        print(f"\nFailed: {outcome['error']}", file=sys.stderr)
+        return 1
+    if outcome["exchange_error"]:
+        print(f"\nGot the code, but the exchange failed:\n  {outcome['exchange_error']}\n", file=sys.stderr)
+        print("Credentials are fine if `status` showed Basic auth accepted, so the", file=sys.stderr)
+        print("remaining cause is app state: the app must be 'Ready For Use' on", file=sys.stderr)
+        print("developer.schwab.com. 'Approved - Pending' authorizes but cannot", file=sys.stderr)
+        print("exchange codes.", file=sys.stderr)
+        return 1
+
+    used = exchanged.get("redirect_uri")
+    if used and used != auth.callback_url:
+        print(f"\nNOTE: {auth.callback_url!r} was rejected; {used!r} worked.")
+        print("      Update SCHWAB_CALLBACK_URL in .env to match.")
+
+    st = auth.status()
+    print(f"\nSaved token to {auth.token_path}")
+    print(f"Access token valid {st['access_expires_in_minutes']:.0f} min (auto-refreshed).")
+    print(f"Refresh token valid {st['refresh_expires_in_days']:.1f} days, then consent again.")
+    return 0
+
+
+def _status_cli() -> int:
+    from ..config import settings_report
+
+    print("Settings")
+    for key, value, source in settings_report():
+        print(f"  {key:28} {value:26} {source}")
+
+    auth = SchwabAuth()
+    print("\nAuthentication")
+    st = auth.status()
+    for k, v in st.items():
+        print(f"  {k:28} {v}")
+
+    if not st.get("authenticated"):
+        return 1
+
+    # An unexpired token still proves nothing until a call succeeds.
+    print("\nLive check")
+    try:
+        provider = SchwabProvider(auth)
+        spot = provider.get_spot(_instruments.SPX)
+        print(f"  $SPX spot                    {spot}")
+    except Exception as exc:
+        print(f"  FAILED: {exc}")
+        return 1
     return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "login":
-        raise SystemExit(_login_cli())
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    rest = sys.argv[2:]
+    if cmd == "login":
+        raise SystemExit(_login_cli(rest))
+    if cmd == "status":
+        raise SystemExit(_status_cli())
+    if cmd == "autologin":
+        raise SystemExit(_autologin_cli(rest))
+    if cmd == "authurl":
+        print(SchwabAuth().authorize_url())
+        raise SystemExit(0)
     print(__doc__)
+    print("Commands:\n"
+          "  autologin [--port N]    browser -> local listener -> token (no paste)\n"
+          "  authurl                 print the authorization URL\n"
+          "  login '<redirect url>'  exchange the code (also accepts stdin)\n"
+          "  status                  settings, both token clocks, live check")

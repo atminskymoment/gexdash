@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gexdash — connect to Schwab</title>
+<link rel="stylesheet" href="/static/styles.css">
+<style>
+  .wrap { max-width: 46rem; margin: 0 auto; padding: var(--gap); display: grid; gap: var(--gap); }
+  .step { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid var(--border);
+          border-radius: var(--radius); background: var(--surface-1); }
+  .step h3 { margin: 0; font-size: 13px; font-weight: 650; display: flex; gap: 8px; align-items: center; }
+  .num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+         background: var(--series-call); color: #fff; font-size: 11px; font-weight: 700; }
+  .step p { margin: 0; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
+  .btn-primary { background: var(--series-call); color: #fff; border-color: transparent;
+                 font-weight: 620; padding: 8px 16px; }
+  .btn-primary:hover { filter: brightness(1.08); border-color: transparent; }
+  input[type=text] { font-family: var(--mono); font-size: 12px; padding: 8px 10px; width: 100%;
+                     border: 1px solid var(--border); border-radius: 7px;
+                     background: var(--page); color: var(--text-primary); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12px;
+        font-variant-numeric: tabular-nums; }
+  .kv dt { color: var(--text-muted); }
+  .kv dd { margin: 0; }
+  .result { font-size: 12.5px; line-height: 1.5; }
+  .result.ok { color: var(--good); }
+  .result.bad { color: var(--critical); }
+  .attempt { font-family: var(--mono); font-size: 11px; color: var(--text-secondary);
+             border-left: 2px solid var(--border); padding-left: 8px; margin-top: 6px; }
+  .clock { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+           border: 1px solid var(--border); }
+  .clock.warn { color: var(--serious); border-color: color-mix(in srgb, var(--serious) 50%, transparent); }
+  .clock.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 50%, transparent); }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">gexdash</div>
+  <span class="ver">connect to Schwab</span>
+  <div class="spacer"></div>
+  <span class="badge" id="badge-state">checking…</span>
+  <a href="/"><button>← dashboard</button></a>
+  <button id="btn-theme" title="Toggle light / dark">◐</button>
+</header>
+
+<div class="wrap">
+
+  <div id="notices"></div>
+
+  <section class="card">
+    <h2>Current state</h2>
+    <dl class="kv" id="state"></dl>
+  </section>
+
+  <section class="step">
+    <h3><span class="num">1</span> Authorize with Schwab</h3>
+    <p>Opens Schwab in a new tab. After you approve, the browser will try to load
+       your callback and <strong>fail to connect</strong> — that is expected, nothing is
+       listening there. The address bar will still hold the code.</p>
+    <div class="row">
+      <a id="auth-link" target="_blank" rel="noopener"><button class="btn-primary">Authorize with Schwab ↗</button></a>
+      <span class="muted small" id="auth-hint"></span>
+    </div>
+  </section>
+
+  <section class="step">
+    <h3><span class="num">2</span> Paste the URL you landed on</h3>
+    <p>Copy the whole address (⌘L then ⌘C) and paste it here. The code is
+       single-use and short-lived, so do this straight away — pasting into
+       this field is faster than a terminal round-trip.</p>
+    <input type="text" id="redirect-url" placeholder="https://127.0.0.1/?code=…&amp;session=…" autocomplete="off" spellcheck="false">
+    <div class="row">
+      <button class="btn-primary" id="btn-exchange">Connect</button>
+      <button id="btn-paste">Paste from clipboard</button>
+      <span id="exchange-state" class="muted small"></span>
+    </div>
+    <div id="result" class="result"></div>
+  </section>
+
+  <section class="card">
+    <h2>Settings <span class="muted" style="text-transform:none;letter-spacing:0">— secrets shown by length only</span></h2>
+    <dl class="kv" id="settings"></dl>
+  </section>
+
+  <section class="card">
+    <h2>Danger zone</h2>
+    <div class="row">
+      <button id="btn-logout">Delete stored token</button>
+      <span class="muted small">Requires a fresh browser consent afterwards.</span>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+const savedTheme = new URLSearchParams(location.search).get("theme") || localStorage.getItem("gexdash-theme");
+if (savedTheme === "dark" || savedTheme === "light") document.documentElement.dataset.theme = savedTheme;
+
+$("btn-theme").addEventListener("click", () => {
+  const root = document.documentElement;
+  const isDark = root.dataset.theme ? root.dataset.theme === "dark"
+                                    : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = isDark ? "light" : "dark";
+  localStorage.setItem("gexdash-theme", root.dataset.theme);
+});
+
+function clockChip(value, unit, warnBelow) {
+  const cls = value <= 0 ? "warn" : value < warnBelow ? "warn" : "good";
+  return `<span class="clock ${cls}">${value.toFixed(unit === "days" ? 1 : 0)} ${unit}</span>`;
+}
+
+async function refresh() {
+  const s = await (await fetch("/api/auth/status")).json();
+
+  const badge = $("badge-state");
+  badge.textContent = !s.configured ? "no credentials"
+                    : s.authenticated ? "connected" : "not connected";
+  badge.className = "badge " + (s.authenticated ? "live" : s.configured ? "warn" : "");
+
+  const rows = [
+    ["Provider", esc(s.provider) + (s.provider !== "schwab"
+       ? ' <span class="muted">— set GEXDASH_PROVIDER=schwab in .env for live data</span>' : "")],
+    ["Credentials", s.configured ? "app key and secret present" : "<span style='color:var(--critical)'>missing</span>"],
+    ["Callback in use", `<code>${esc(s.callback_url ?? "-")}</code>`],
+    ["Token file", `<code>${esc(s.token_path)}</code>`],
+  ];
+  if (s.authenticated) {
+    rows.push(["Access token", clockChip(s.access_expires_in_minutes, "min", 5) +
+      ' <span class="muted">refreshed automatically</span>']);
+    rows.push(["Refresh token", clockChip(s.refresh_expires_in_days, "days", 2) +
+      ' <span class="muted">then Schwab requires consent again — it cannot be renewed in code</span>']);
+  } else {
+    rows.push(["Detail", esc(s.detail ?? "")]);
+  }
+  $("state").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+
+  $("auth-link").href = s.authorize_url ?? "#";
+  $("auth-link").querySelector("button").disabled = !s.authorize_url;
+  $("auth-hint").textContent = s.redirect_candidates?.length > 1
+    ? `Will try ${s.redirect_candidates.length} redirect_uri forms on exchange.` : "";
+
+  $("settings").innerHTML = (s.settings ?? [])
+    .map(r => `<dt>${esc(r.key)}</dt><dd>${esc(r.value)} <span class="muted">${esc(r.source)}</span></dd>`)
+    .join("");
+}
+
+async function exchange() {
+  const url = $("redirect-url").value.trim();
+  if (!url) { $("result").className = "result bad"; $("result").textContent = "Paste the redirect URL first."; return; }
+
+  $("btn-exchange").disabled = true;
+  $("exchange-state").textContent = "exchanging…";
+  try {
+    const res = await fetch("/api/auth/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redirect_url: url }),
+    });
+    const body = await res.json();
+
+    if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+
+    if (body.ok) {
+      $("result").className = "result ok";
+      $("result").innerHTML =
+        `<strong>Connected.</strong> Access token good for ${body.access_expires_in_minutes.toFixed(0)} minutes ` +
+        `(auto-refreshed); refresh token good for ${body.refresh_expires_in_days.toFixed(1)} days.` +
+        (body.mismatch
+          ? `<br>Note: <code>${esc(body.configured_redirect_uri)}</code> was rejected but ` +
+            `<code>${esc(body.redirect_uri_accepted)}</code> worked — update SCHWAB_CALLBACK_URL in .env.`
+          : "") +
+        `<br><a href="/">Open the dashboard →</a>`;
+      $("redirect-url").value = "";
+    } else {
+      $("result").className = "result bad";
+      $("result").innerHTML = `<strong>Exchange failed.</strong>` +
+        (body.attempts ?? []).map(a =>
+          `<div class="attempt">${esc(a.redirect_uri)}<br>${esc(a.error)}</div>`).join("") +
+        `<p class="muted small" style="margin-top:8px">${esc(body.hint ?? "")}</p>`;
+    }
+  } catch (err) {
+    $("result").className = "result bad";
+    $("result").textContent = err.message;
+  } finally {
+    $("btn-exchange").disabled = false;
+    $("exchange-state").textContent = "";
+    refresh();
+  }
+}
+
+$("btn-exchange").addEventListener("click", exchange);
+$("redirect-url").addEventListener("keydown", (e) => { if (e.key === "Enter") exchange(); });
+
+$("btn-paste").addEventListener("click", async () => {
+  try {
+    $("redirect-url").value = (await navigator.clipboard.readText()).trim();
+  } catch {
+    $("exchange-state").textContent = "clipboard blocked — paste manually";
+  }
+});
+
+$("btn-logout").addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  $("result").className = "result";
+  $("result").textContent = "Stored token deleted.";
+  refresh();
+});
+
+refresh();
+</script>
+</body>
+</html>

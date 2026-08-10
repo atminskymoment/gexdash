@@ -13,6 +13,14 @@ explicitly unavailable rather than estimated.
 
 __version__ = "0.1.0"
 
-from . import chain, exposure, greeks, instruments  # noqa: F401
+# Load .env BEFORE anything else imports, because several modules read
+# os.environ at import time (instruments.py resolves exercise overrides, and
+# store/schwab resolve GEXDASH_HOME into module constants). Loading later
+# would leave those already bound to the wrong values.
+from .config import load_dotenv as _load_dotenv  # noqa: E402
+
+_DOTENV_APPLIED = _load_dotenv()
+
+from . import chain, exposure, greeks, instruments  # noqa: F401,E402
 
 __all__ = ["chain", "exposure", "greeks", "instruments", "__version__"]

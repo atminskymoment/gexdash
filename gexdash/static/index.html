@@ -90,13 +90,33 @@
 
     <section class="card price-card">
       <h2>
-        <span id="price-title">— · 1-minute</span>
+        <span id="price-title">—</span>
         <span class="ohlc" id="price-ohlc"></span>
         <span class="grow"></span>
-        <label class="chk"><input type="checkbox" id="chk-levels" checked> GEX levels</label>
+        <label class="chk"><input type="checkbox" id="chk-levels" checked> Levels</label>
+        <label class="chk"><input type="checkbox" id="chk-fit"> Fit levels</label>
         <label class="chk"><input type="checkbox" id="chk-vwap" checked> VWAP</label>
       </h2>
+
+      <div class="chart-controls">
+        <div class="seg" id="range-seg" role="group" aria-label="Range"></div>
+        <div class="seg" id="interval-seg" role="group" aria-label="Bar interval"></div>
+        <span class="grow"></span>
+        <div class="seg">
+          <button id="zoom-out" title="Zoom out">−</button>
+          <button id="zoom-in" title="Zoom in">+</button>
+          <button id="zoom-reset" title="Fit all">⤢</button>
+        </div>
+        <div class="seg" id="ind-seg" role="group" aria-label="Indicators">
+          <button data-ind="rsi">RSI</button>
+          <button data-ind="macd">MACD</button>
+          <button data-ind="adx">ADX/DI</button>
+        </div>
+      </div>
+      <div class="muted small" id="plan-note"></div>
+
       <div id="price-chart"></div>
+      <div id="indicator-panes"></div>
     </section>
 
     <section class="card">

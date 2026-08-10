@@ -68,6 +68,14 @@ class Instrument:
     #: Typical continuous dividend yield. Overridable per request; a default
     #: per instrument beats applying the S&P's yield to QQQ.
     default_dividend_yield: float = 0.013
+    #: Sanity band for the underlying price, as a wrong-security tripwire.
+    #:
+    #: Not a forecast -- deliberately decades-wide. It exists because a
+    #: mistyped or aliased root can resolve to a completely different
+    #: security and be priced without complaint: Schwab's bare ``ES`` is
+    #: Eversource Energy at ~$71, which as an "E-mini S&P 500 future" at
+    #: x$50 with Black-76 would produce entirely plausible-looking garbage.
+    plausible_spot: tuple[float, float] = (0.01, 1e9)
 
     @property
     def is_future(self) -> bool:
@@ -100,6 +108,7 @@ SPX = Instrument(
     chain_symbol="$SPX",
     display_strikes=30,
     default_dividend_yield=0.013,
+    plausible_spot=(1000, 50000),
 )
 
 SPY = Instrument(
@@ -113,9 +122,14 @@ SPY = Instrument(
     display_strikes=40,
     european=False,  # American, physically settled
     default_dividend_yield=0.012,
+    plausible_spot=(100, 5000),
 )
 
 #: UNVERIFIED AGAINST SCHWAB — see the note on the futures instruments below.
+#:
+#: SYMBOL WARNING: bare ``ES`` on Schwab is **Eversource Energy**, a NYSE
+#: utility. It returns a perfectly valid option chain. ``plausible_spot``
+#: below is the tripwire that stops it being priced as an E-mini.
 #:
 #: EXERCISE: American. CME's quarterly and serial options on E-mini S&P 500
 #: futures are American-style; the weekly and end-of-month options are
@@ -132,6 +146,7 @@ ES = Instrument(
     chain_symbol="/ES",
     display_strikes=30,
     european=False,
+    plausible_spot=(1000, 50000),
 )
 
 # ------------------------------------------------------------- Nasdaq 100
@@ -152,6 +167,7 @@ NDX = Instrument(
     chain_symbol="$NDX",
     display_strikes=40,
     default_dividend_yield=0.007,
+    plausible_spot=(5000, 200000),
 )
 
 QQQ = Instrument(
@@ -165,6 +181,7 @@ QQQ = Instrument(
     display_strikes=40,
     european=False,  # American, physically settled
     default_dividend_yield=0.005,
+    plausible_spot=(100, 5000),
 )
 
 #: UNVERIFIED AGAINST SCHWAB. The exposure maths for the futures instruments
@@ -188,6 +205,7 @@ NQ = Instrument(
     chain_symbol="/NQ",
     display_strikes=50,
     european=False,
+    plausible_spot=(5000, 200000),
 )
 
 

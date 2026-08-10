@@ -105,7 +105,8 @@ class MockProvider:
         )
 
     def get_price_history(
-        self, instrument: Instrument, *, interval_minutes: int = 1, lookback_hours: float = 7.0
+        self, instrument: Instrument, *, interval_minutes: int = 1,
+        lookback_hours: float = 7.0, plan=None
     ) -> PriceBars:
         """Synthesize an intraday OHLCV series.
 
@@ -114,14 +115,33 @@ class MockProvider:
         VWAP line have something plausible to render. Invented, like the rest
         of this provider -- the UI banner says so.
         """
+        # A plan carries a range and an interval; translate both into a bar
+        # count and a bar size so the synthetic series spans what was asked
+        # for rather than a fixed session.
+        if plan is not None:
+            from ..history import INTERVALS, RANGES
+            iv = INTERVALS[plan.served_interval_key or plan.interval_key]
+            rng_def = RANGES[plan.range_key]
+            days = rng_def.days if rng_def.days is not None else 365
+            if iv.intraday:
+                interval_minutes = iv.minutes
+                n = max(int(days * 390 / iv.minutes), 30)
+            else:
+                per_year = {"daily": 252, "weekly": 52, "monthly": 12}[iv.kind]
+                interval_minutes = {"daily": 1440, "weekly": 7 * 1440, "monthly": 30 * 1440}[iv.kind]
+                n = max(int(days / 365 * per_year), 12)
+            n = min(n, 4000)          # keep the payload sane on 10Y/1m asks
+        else:
+            n = max(int(lookback_hours * 60 / max(interval_minutes, 1)), 30)
+
         base = self._spot_override or DEFAULT_SPOT.get(instrument.key, 100.0)
-        n = max(int(lookback_hours * 60 / max(interval_minutes, 1)), 30)
         rng = np.random.default_rng(self.seed + 1_000)
 
         # Per-bar vol scaled off the instrument's ATM level, annualised ->
         # per-interval, so NDX candles are visibly wider than SPX's.
         annual = DEFAULT_ATM_VOL.get(instrument.key, 0.115)
-        per_bar = annual / np.sqrt(252 * 390 / max(interval_minutes, 1))
+        bars_per_year = 252 * 390 / max(interval_minutes, 1)
+        per_bar = annual / np.sqrt(max(bars_per_year, 1.0))
 
         steps = rng.normal(0.0, per_bar, n)
         # Mild mean reversion so a long series does not wander off the strike grid.

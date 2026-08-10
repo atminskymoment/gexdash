@@ -183,3 +183,70 @@ def test_cached_provider_force_bypasses_cache(tmp_path):
     provider.get_chain(instruments.SPX, max_dte=30)
     chain = provider.get_chain(instruments.SPX, max_dte=30, force=True)
     assert chain.meta.get("from_cache") is False
+
+
+# ----------------------------------------------------------------------
+# Live-feed quirks, all found against a real Schwab entitlement
+# ----------------------------------------------------------------------
+
+
+def test_long_max_value_sentinel_is_filtered():
+    """$UVOL returns 92233720368.54776 live -- Long.MAX_VALUE / 1e8.
+
+    Taken at face value that is 92 billion shares of advancing volume, and
+    every ratio derived from it is nonsense.
+    """
+    assert _clean(92233720368.54776) is None
+    assert _clean(9223372036854775807.0) is None
+    assert _clean(1642.0) == 1642.0
+    assert _clean(9.2e10) == 9.2e10, "a merely large number is not the sentinel"
+
+
+def test_wrong_security_is_refused_by_the_plausibility_band():
+    """Schwab's bare `ES` is Eversource Energy at ~$71.
+
+    It returns a valid option chain. Priced as an E-mini at x$50 with
+    Black-76 it would yield a smooth, wholly fictitious exposure surface, so
+    the band exists to make that loud instead of silent.
+    """
+    from gexdash.providers.base import ProviderError
+    from gexdash.providers.schwab import SchwabProvider
+
+    with pytest.raises(ProviderError, match="outside the plausible band"):
+        SchwabProvider._assert_plausible(instruments.get("ES"), 71.17, "chain")
+
+    # A real E-mini print passes.
+    SchwabProvider._assert_plausible(instruments.get("ES"), 7791.5, "chain")
+
+
+@pytest.mark.parametrize("key,spot", [
+    ("SPX", 7753.11), ("SPY", 773.0), ("NDX", 29621.8), ("QQQ", 721.05),
+])
+def test_real_observed_prices_pass_the_band(key, spot):
+    """Bands are decades-wide tripwires, not forecasts -- live values must pass."""
+    from gexdash.providers.schwab import SchwabProvider
+    SchwabProvider._assert_plausible(instruments.get(key), spot, "chain")
+
+
+def test_chain_responses_merge_without_losing_strikes():
+    """The date-bisection fix for Schwab's TooBigBody 502.
+
+    A full SPX chain over 60 days exceeds the gateway's response limit, so it
+    is fetched in date slices and merged. strikeCount would have been easier
+    and would have silently truncated the wings -- where put walls live.
+    """
+    from gexdash.providers.schwab import SchwabProvider
+
+    left = {"underlyingPrice": 7753.11,
+            "callExpDateMap": {"2026-08-14:4": {"7700.0": [{"a": 1}]}},
+            "putExpDateMap": {"2026-08-14:4": {"7700.0": [{"b": 1}]}}}
+    right = {"underlyingPrice": None,
+             "callExpDateMap": {"2026-09-18:39": {"7800.0": [{"c": 1}]},
+                                "2026-08-14:4": {"7750.0": [{"d": 1}]}},
+             "putExpDateMap": {}}
+
+    merged = SchwabProvider._merge_chain_responses(left, right)
+    assert set(merged["callExpDateMap"]) == {"2026-08-14:4", "2026-09-18:39"}
+    # A boundary landing mid-expiry must union the strikes, not replace them.
+    assert set(merged["callExpDateMap"]["2026-08-14:4"]) == {"7700.0", "7750.0"}
+    assert merged["underlyingPrice"] == 7753.11, "must keep the slice that had a price"

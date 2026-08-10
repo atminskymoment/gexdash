@@ -42,6 +42,8 @@ const state = {
   // Last pointer position over the price chart, so the crosshair survives a
   // re-render. null when the pointer is away.
   xhair: null,
+  // Bar the readout is showing; null means the most recent.
+  readoutIndex: null,
 };
 
 /* ----------------------------------------------------------- formatting */
@@ -372,6 +374,8 @@ function renderPriceChart() {
       bars?.reason ? `<br><span class="small">${esc(bars.reason)}</span>` : ""
     }<br><span class="small">Every other panel is unaffected — the exposure surface does not need bars.</span></div>`;
     $("price-ohlc").textContent = "";
+    $("chart-readout").hidden = true;
+    state.chart = null;
     $("indicator-panes").innerHTML = "";
     return;
   }
@@ -444,7 +448,9 @@ function renderPriceChart() {
   // Lay the right-hand tags out first, then suppress axis labels against
   // where the tags actually ended up. Using each level's natural price
   // instead lets a displaced tag land straight on an axis label.
-  const TAG_H = 11;
+  const TAG_H = 11;           // line height of a level tag
+  const LAST_TAG_H = 14;      // height of the last-price tag box
+  const TEXT_ASCENT = 9;      // baseline to cap height, at the tag font size
   const lastY = y(vClose[n - 1]);
   let sweepY = -Infinity;
   const tags = levels.filter((l) => !l.offscale)
@@ -454,8 +460,11 @@ function renderPriceChart() {
       let ty = Math.max(t.y - 3, sweepY + TAG_H);
       // The last-price tag is pinned to the price and drawn separately, so it
       // takes no part in this sweep -- step over its band rather than letting
-      // a tag land on top of it and make both unreadable.
-      if (ty > lastY - TAG_H && ty < lastY + TAG_H) ty = lastY + TAG_H;
+      // a tag land on top of it and make both unreadable. Clearance is the
+      // tag box's half-height plus the text ascent, not TAG_H: the box is
+      // 14px tall, so spacing by line height alone still clips it.
+      const boxTop = lastY - LAST_TAG_H / 2, boxBottom = lastY + LAST_TAG_H / 2;
+      if (ty > boxTop - 2 && ty < boxBottom + TEXT_ASCENT) ty = boxBottom + TEXT_ASCENT;
       sweepY = ty;
       return { ...t, ty };
     });
@@ -527,14 +536,15 @@ function renderPriceChart() {
   };
   attachCrosshair(svg);
 
-  const i = n - 1;
   $("price-title").textContent =
     `${d.instrument} · ${state.bars?.plan?.interval_served || state.interval} · ${state.range}`;
+  // The header keeps the context that does not track the cursor; the per-bar
+  // numbers belong to the readout.
   $("price-ohlc").textContent =
-    `O ${vOpen[i].toFixed(2)}  H ${vHigh[i].toFixed(2)}  L ${vLow[i].toFixed(2)}  C ${vClose[i].toFixed(2)}` +
-    `   ${n} of ${total} bars` + (bars.synthetic ? "   · synthetic" : "");
+    `${n} of ${total} bars` + (bars.synthetic ? "   · synthetic" : "");
 
   renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw);
+  renderReadout(null);
 
   // Every refresh rebuilds this SVG from scratch, which would drop the
   // crosshair until the pointer happened to move again -- so while streaming
@@ -627,21 +637,62 @@ function drawCrosshair(svg, clientX, clientY) {
   syncIndicatorCrosshair(cx);
 
   // Read out the hovered bar, not just the last one.
-  $("price-ohlc").textContent =
-    `O ${c.open[i].toFixed(2)}  H ${c.high[i].toFixed(2)}  L ${c.low[i].toFixed(2)}  C ${c.close[i].toFixed(2)}` +
-    `   ${label}`;
+  renderReadout(i);
 }
 
 function hideCrosshair() {
   document.querySelectorAll("[data-xhair]").forEach((g) => (g.style.display = "none"));
+  renderReadout(null);
+}
+
+/**
+ * Bottom-left readout for one bar: null means the most recent.
+ *
+ * The OHLC lives here rather than in the header so the numbers sit beside the
+ * candle they describe, and so the same values are not shown in two places at
+ * once -- which reads as two different quotes when only one of them tracks the
+ * cursor.
+ */
+function renderReadout(index) {
+  const box = $("chart-readout");
   const c = state.chart;
-  if (c && c.n) {
-    const i = c.n - 1;
-    $("price-ohlc").textContent =
-      `O ${c.open[i].toFixed(2)}  H ${c.high[i].toFixed(2)}  L ${c.low[i].toFixed(2)}  C ${c.close[i].toFixed(2)}` +
-      `   ${c.n} of ${state.bars?.close?.length ?? c.n} bars` +
-      (state.bars?.synthetic ? "   · synthetic" : "");
+  if (!box) return;
+  // Remembered so toggling the checkbox restores whatever bar was showing.
+  state.readoutIndex = index;
+  if (!c || !c.n || !$("chk-readout").checked) { box.hidden = true; return; }
+  box.hidden = false;
+
+  const i = index == null ? c.n - 1 : index;
+  const stamp = String(c.time[i]);
+  const when = c.daily ? stamp.slice(0, 10) : `${stamp.slice(0, 10)} ${stamp.slice(11, 16)}`;
+  const dir = c.close[i] >= c.open[i] ? "up" : "dn";
+
+  // Indicators are indexed over the whole series; the chart shows a window.
+  const ind = state.bars?.indicators || {};
+  const at = (key) => {
+    const v = ind[key]?.[c.lo + i];
+    return v === null || v === undefined || !isFinite(v) ? null : v;
+  };
+  const rsi = at("rsi"), rsiMa = at("rsi_ma");
+
+  const cell = (k, v, cls = "") =>
+    `<span><span class="r-k">${k}</span> <span class="r-v ${cls}">${v}</span></span>`;
+  const swatch = (colour) => `<span class="r-dot" style="background:${colour}"></span>`;
+
+  const rows = [
+    `<div class="r-row"><span class="r-when">${when}</span></div>`,
+    `<div class="r-row">${cell("O", c.open[i].toFixed(2))}${cell("H", c.high[i].toFixed(2))}` +
+      `${cell("L", c.low[i].toFixed(2))}${cell("C", c.close[i].toFixed(2), dir)}</div>`,
+  ];
+  if (rsi !== null) {
+    rows.push(
+      `<div class="r-row">` +
+      `<span>${swatch("var(--series-violet)")}${cell("RSI", rsi.toFixed(1))}</span>` +
+      (rsiMa === null ? "" : `<span>${swatch("var(--series-gold)")}${cell("MA20", rsiMa.toFixed(1))}</span>`) +
+      `</div>`
+    );
   }
+  box.innerHTML = rows.join("");
 }
 
 /** Same x on every indicator pane, so the panes read as one chart. */
@@ -719,13 +770,13 @@ function zoomBy(factor) {
 const RIGHT_PAD_BARS = 10;
 
 const IND_SPECS = [
-  { key: "rsi", title: "RSI (14) + MA(20)", height: 81,
+  { key: "rsi", title: "RSI (14) + MA(20)", height: 101,
     series: [["rsi", "var(--series-violet)"], ["rsi_ma", "var(--series-gold)"]],
     domain: [0, 100], guides: [30, 70] },
-  { key: "macd", title: "MACD (12,26,9)", height: 88,
+  { key: "macd", title: "MACD (12,26,9)", height: 110,
     series: [["macd", "var(--series-call)"], ["macd_signal", "var(--series-put)"]],
     histogram: "macd_histogram", zero: true },
-  { key: "adx", title: "ADX / DI (14)", height: 81,
+  { key: "adx", title: "ADX / DI (14)", height: 101,
     series: [["adx", "var(--text-primary)"], ["di_plus", "var(--pos)"], ["di_minus", "var(--neg)"]],
     domain: [0, 100], guides: [25] },
 ];
@@ -1339,6 +1390,9 @@ $("f-symbol").addEventListener("change", () => {
 ["chk-levels", "chk-vwap", "chk-fit"].forEach((id) =>
   $(id).addEventListener("change", renderPriceChart));
 $("chk-cross").addEventListener("change", () => { if (!$("chk-cross").checked) hideCrosshair(); });
+// Redrawn in place rather than by re-rendering the chart: the readout is an
+// overlay, and a full render would drop the hover the user is reading from.
+$("chk-readout").addEventListener("change", () => renderReadout(state.readoutIndex));
 
 $("sel-range").addEventListener("change", (e) => {
   state.range = e.target.value;

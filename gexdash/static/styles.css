@@ -551,3 +551,29 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 .xhair line { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; shape-rendering: crispEdges; }
 .xhair rect { fill: var(--text-primary); }
 .xhair text { fill: var(--surface-1); font-size: 9.5px; font-weight: 620; font-variant-numeric: tabular-nums; }
+
+/* ---- cursor readout ---------------------------------------------------- */
+/* Overlaid bottom-left of the price chart rather than placed under it, so
+   reading a bar does not move your eye away from the bar. */
+.chart-wrap { position: relative; }
+.readout {
+  position: absolute; left: 10px; bottom: 8px; pointer-events: none;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px 9px; border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 1px solid var(--border);
+  font-size: 11px; font-variant-numeric: tabular-nums; line-height: 1.35;
+}
+.readout .r-row { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
+.readout .r-when { color: var(--text-secondary); font-weight: 620; }
+.readout .r-k { color: var(--text-muted); }
+.readout .r-v { color: var(--text-primary); font-weight: 620; }
+.readout .r-v.up { color: var(--pos); }
+.readout .r-v.dn { color: var(--neg); }
+/* A swatch, not coloured text: identity sits beside the value while the
+   number itself keeps a text token and stays legible -- which is also the
+   documented relief for the gold MA's contrast on the light surface. */
+.readout .r-dot {
+  width: 8px; height: 8px; border-radius: 2px; display: inline-block;
+  margin-right: 4px; vertical-align: baseline;
+}

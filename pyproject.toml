@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gexdash"
+version = "0.1.0"
+description = "Dealer exposure dashboard for SPX, SPY, ES, NDX, QQQ and NQ: GEX/DEX/VANX/CEX from a daily OI snapshot re-priced against live spot"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Minsky Moment" }]
+keywords = ["options", "gamma-exposure", "gex", "dealer-positioning", "spx", "ndx", "greeks"]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov"]
+
+[project.urls]
+Homepage = "https://github.com/atminskymoment/gexdash"
+Repository = "https://github.com/atminskymoment/gexdash"
+Issues = "https://github.com/atminskymoment/gexdash/issues"
+
+[project.scripts]
+gexdash = "gexdash.server:main"
+gexdash-crosscheck = "gexdash.crosscheck:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gexdash"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::UserWarning"]

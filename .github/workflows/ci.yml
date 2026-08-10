@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Test
+        # GEXDASH_HOME is redirected so the suite never touches a real
+        # ~/.gexdash, and never sees a developer's cached chains or token.
+        env:
+          GEXDASH_HOME: ${{ runner.temp }}/gexdash
+        run: python -m pytest tests/ -q
+
+      - name: Import check (no side effects at import time)
+        env:
+          GEXDASH_HOME: ${{ runner.temp }}/gexdash-import
+        run: |
+          python -c "import gexdash.server"
+          test ! -d "$GEXDASH_HOME" || (echo "importing the server created $GEXDASH_HOME" && exit 1)

@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------- secrets
+# The Schwab OAuth token lives under GEXDASH_HOME (default ~/.gexdash), but
+# guard against it ever being copied into the tree. A leaked refresh token is
+# live brokerage-account access.
+.gexdash/
+*token*.json
+schwab_token.json
+.env
+.env.*
+!.env.example
+
+# ------------------------------------------------------------------- data
+# Cached option chains. Regenerable, sometimes large, and on a real account
+# they are licensed market data that must not be redistributed.
+*.db
+*.sqlite
+*.sqlite3
+data/
+snapshots/
+
+# ------------------------------------------------------------------ python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# --------------------------------------------------------------------- os
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

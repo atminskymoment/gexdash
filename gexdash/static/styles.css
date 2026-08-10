@@ -1,0 +1,365 @@
+/* gexdash — dealer exposure dashboard.
+ *
+ * Palette values come from the validated data-viz reference instance. Each
+ * mode's steps were run through the palette validator against the surface
+ * they actually render on, and all six checks pass in both:
+ *
+ *              calls/puts (categorical)   pos/neg (diverging)
+ *   light      CVD dE 24.7                CVD dE 21.6      on #fcfcfb
+ *   dark       CVD dE 26.8                CVD dE 19.2      on #1a1a19
+ *
+ * Note the deliberate departure from trading convention: calls/puts are
+ * blue/orange, not green/red. Green-vs-red is the single worst pair for
+ * colour-vision deficiency, and it is the one distinction on this page that
+ * must never be ambiguous.
+ */
+
+/* Light is the default; dark is opt-in.
+ *
+ * Both modes are *selected*, not flipped: the dark hues are their own steps
+ * chosen for the dark surface, and each pair was run through the palette
+ * validator against the surface it actually renders on. Light
+ * (blue #2a78d6 / orange #eb6834 / red #e34948 on #fcfcfb) passes all six
+ * checks -- worst adjacent CVD dE 24.7 for calls/puts, 21.6 for the diverging
+ * poles, all >= 3:1 contrast. */
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --gridline: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+
+  /* categorical */
+  --series-call: #2a78d6;
+  --series-put: #eb6834;
+
+  /* diverging poles for signed exposure */
+  --pos: #2a78d6;
+  --neg: #e34948;
+  --mid: #f0efec;
+
+  /* status — reserved, never used as a series */
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+
+  --radius: 10px;
+  --gap: 14px;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Dark steps, declared once and shared by both scopes below. */
+@media (prefers-color-scheme: dark) {
+  /* The :not() guard lets an explicit light stamp beat OS-dark; :where()
+     keeps this block's specificity at zero so the toggle scope always wins. */
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-call: #3987e5;
+    --series-put: #d95926;
+    --pos: #3987e5;
+    --neg: #e66767;
+    --mid: #383835;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --series-call: #3987e5;
+  --series-put: #d95926;
+  --pos: #3987e5;
+  --neg: #e66767;
+  --mid: #383835;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+a { color: var(--series-call); }
+
+/* ---------------------------------------------------------------- header */
+
+header.top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.brand { font-weight: 680; letter-spacing: 0.14em; text-transform: uppercase; font-size: 13px; }
+.ver { font-size: 11px; color: var(--text-muted); }
+.spacer { flex: 1 1 auto; }
+.grow { flex: 1 1 auto; }
+
+.clock { line-height: 1.15; }
+.clock .k { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
+.clock .v { font-size: 14px; font-weight: 620; font-variant-numeric: tabular-nums; }
+.clock .et { font-size: 9px; color: var(--text-muted); }
+.muted { color: var(--text-muted); font-weight: 400; }
+
+.phase { text-transform: uppercase; font-size: 12px; letter-spacing: 0.05em; }
+.phase.open { color: var(--good); }
+.phase.pre-market, .phase.after-hours { color: var(--warning); }
+.phase.closed { color: var(--text-muted); }
+
+.badge {
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-secondary);
+  white-space: nowrap;
+}
+.badge.warn { color: var(--serious); border-color: color-mix(in srgb, var(--serious) 50%, transparent); }
+.badge.live { color: var(--good); border-color: color-mix(in srgb, var(--good) 50%, transparent); }
+
+select.ticker { font-weight: 650; min-width: 132px; }
+
+/* -------------------------------------------------------------- strip/filters */
+
+.strip {
+  display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
+  padding: 6px 16px; font-size: 11px; color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-1) 60%, var(--page));
+  font-variant-numeric: tabular-nums;
+}
+.strip b { color: var(--text-primary); font-weight: 620; }
+
+.filters {
+  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface-1);
+}
+.field { display: flex; flex-direction: column; gap: 3px; }
+.field label { font-size: 9px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted); }
+
+select, button {
+  font-family: var(--font); font-size: 12.5px; color: var(--text-primary);
+  background: var(--page); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 9px; min-height: 30px; cursor: pointer;
+}
+select:hover, button:hover { border-color: var(--text-muted); }
+select:focus-visible, button:focus-visible { outline: 2px solid var(--series-call); outline-offset: 1px; }
+
+/* ------------------------------------------------------------------ layout */
+
+.columns {
+  display: grid; gap: var(--gap); padding: var(--gap);
+  /* Four columns matching the reference dashboard, with the chart column
+     wider because it carries four stacked plots. Collapses on narrow
+     viewports rather than shrinking the charts into unreadability. */
+  grid-template-columns: minmax(210px, 0.95fr) minmax(230px, 1.05fr) minmax(200px, 0.9fr) minmax(300px, 1.5fr);
+  align-items: start;
+}
+@media (max-width: 1450px) { .columns { grid-template-columns: repeat(2, minmax(280px, 1fr)); } }
+@media (max-width: 720px)  { .columns { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px; min-width: 0;
+}
+.card + .card, main + .card { margin: 0 var(--gap) var(--gap); }
+.col { display: flex; flex-direction: column; gap: 10px; }
+
+.card h2 {
+  margin: 0; font-size: 10.5px; letter-spacing: 0.11em; text-transform: uppercase;
+  color: var(--text-muted); font-weight: 650;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+
+.subcard { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.subcard .big { font-size: 22px; font-weight: 640; line-height: 1.1; }
+.subcard.maxpain .big { color: var(--text-primary); }
+.k { font-size: 9.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted); }
+
+/* ------------------------------------------------------------------- regime */
+
+.regime { border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px; padding: 9px 11px; }
+.regime.suppressed { border-left-color: var(--good); }
+.regime.amplified { border-left-color: var(--critical); }
+.regime.transitional { border-left-color: var(--warning); }
+.regime-label { font-size: 19px; font-weight: 680; letter-spacing: 0.02em; }
+.regime.suppressed .regime-label { color: var(--good); }
+.regime.amplified .regime-label { color: var(--critical); }
+.regime.transitional .regime-label { color: var(--serious); }
+.regime-gloss { font-size: 11.5px; color: var(--text-secondary); margin-top: 2px; line-height: 1.35; }
+.regime-src { font-size: 9.5px; color: var(--text-muted); margin-top: 5px; font-style: italic; }
+
+/* -------------------------------------------------------------- stat tiles */
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(86px, 1fr)); gap: 7px; }
+.tiles.two { grid-template-columns: 1fr 1fr; }
+.tiles.wide { grid-template-columns: 1fr; }
+
+.tile { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; min-width: 0; }
+.tile .v { font-size: 15.5px; font-weight: 620; margin-top: 2px; overflow-wrap: anywhere; }
+.tile .why { font-size: 9.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.3; }
+.v.pos { color: var(--pos); }
+.v.neg { color: var(--neg); }
+
+/* Tiles tier A cannot compute. Rendered explicitly rather than omitted: an
+   empty box reads as zero, and a plausible number would be worse. */
+.tile.unavailable { border-style: dashed; opacity: 0.75; display: flex; gap: 9px; align-items: baseline; }
+.tile.unavailable .v { color: var(--text-muted); font-size: 14px; font-weight: 500; margin: 0; }
+.tile.unavailable .body { min-width: 0; }
+
+/* ------------------------------------------------------------------ P/C bar */
+
+.pcbar { height: 7px; border-radius: 4px; background: var(--series-put); overflow: hidden; }
+/* 2px surface gap between the two fills, per the mark spec. */
+.pcbar-fill { height: 100%; background: var(--series-call); border-right: 2px solid var(--surface-1); }
+.pcbar-legend { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-secondary); }
+.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+
+/* -------------------------------------------------------------------- spot */
+
+.spot-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.hero-value { font-size: 33px; font-weight: 660; line-height: 1.05; }
+.spot-meta { font-size: 10.5px; color: var(--text-secondary); text-align: right; line-height: 1.5; }
+
+/* ------------------------------------------------------------------ levels */
+
+table.levels { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+table.levels th {
+  text-align: left; font-size: 9px; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-muted); font-weight: 650; padding: 3px 6px 5px 0;
+  border-bottom: 1px solid var(--gridline);
+}
+table.levels td { padding: 5px 6px 5px 0; border-bottom: 1px solid var(--gridline); font-size: 12px; }
+table.levels tr:last-child td { border-bottom: none; }
+table.levels td.num, table.levels th.num { text-align: right; }
+table.levels .lv { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+/* ------------------------------------------------------------------- radar */
+
+.radar { display: flex; flex-direction: column; gap: 4px; }
+.radar-title { margin-top: 2px; }
+.radar-note { font-size: 9.5px; }
+
+.radar-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 6px 9px; border-radius: 7px;
+  border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.radar-row .nm { font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; font-weight: 620; }
+.radar-row .px { margin-left: auto; font-size: 13px; font-weight: 640; }
+.radar-row .dl { font-size: 10.5px; min-width: 52px; text-align: right; }
+
+/* Spot is the anchor the rest are read against, so it gets the filled
+   treatment rather than another outlined row. */
+.radar-row.is-spot {
+  background: color-mix(in srgb, var(--series-call) 14%, transparent);
+  border-color: color-mix(in srgb, var(--series-call) 45%, transparent);
+}
+.radar-row.is-spot .nm, .radar-row.is-spot .px { color: var(--series-call); }
+.radar-row.above { border-left: 3px solid color-mix(in srgb, var(--pos) 65%, transparent); }
+.radar-row.below { border-left: 3px solid color-mix(in srgb, var(--neg) 65%, transparent); }
+
+/* ------------------------------------------------------------------ charts */
+
+.chart-stack { display: grid; gap: 4px; }
+.chart-block { min-width: 0; }
+.chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.chart-title { font-size: 11px; font-weight: 620; color: var(--text-secondary); }
+.legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 10px; color: var(--text-secondary); text-transform: none; letter-spacing: 0; }
+.legend .item { display: flex; align-items: center; gap: 4px; }
+
+svg { display: block; width: 100%; overflow: visible; }
+svg text { font-family: var(--font); }
+.axis-label { fill: var(--text-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.grid-line { stroke: var(--gridline); stroke-width: 1; shape-rendering: crispEdges; }
+.zero-line { stroke: var(--baseline); stroke-width: 1; shape-rendering: crispEdges; }
+
+/* Level annotations — solid hairlines, never dashed. */
+.marker-line { stroke-width: 1; shape-rendering: crispEdges; opacity: 0.85; }
+/* Marker labels sit inside the plot and are coloured to match their level, so
+   a call-wall label lands blue-on-blue over its own bar and disappears. A
+   surface-coloured halo keeps them legible over any mark, in both themes. */
+.marker-label {
+  font-size: 8.5px; letter-spacing: 0.05em; text-transform: uppercase; font-weight: 680;
+  paint-order: stroke fill; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round;
+}
+
+.bar { shape-rendering: crispEdges; }
+.hit { fill: transparent; cursor: crosshair; }
+.hover-band { fill: var(--text-primary); opacity: 0.07; pointer-events: none; }
+
+.tooltip {
+  position: fixed; pointer-events: none; z-index: 40;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 11.5px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
+  min-width: 170px; opacity: 0; transition: opacity 0.1s;
+}
+.tooltip.on { opacity: 1; }
+.tooltip .tt-strike { font-size: 14px; font-weight: 660; margin-bottom: 4px; }
+.tooltip .tt-row { display: flex; justify-content: space-between; gap: 14px; font-variant-numeric: tabular-nums; }
+.tooltip .tt-row span:first-child { color: var(--text-secondary); }
+
+/* -------------------------------------------------------------- table view */
+
+.tableview { max-height: 420px; overflow: auto; }
+.tableview table { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tableview th {
+  position: sticky; top: 0; background: var(--surface-1); text-align: right;
+  font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted);
+  padding: 5px 8px; border-bottom: 1px solid var(--gridline);
+}
+.tableview th:first-child, .tableview td:first-child { text-align: left; }
+.tableview td { text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--gridline); }
+
+/* --------------------------------------------------------------- notices */
+
+.diag { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 7px 18px; font-size: 11.5px; color: var(--text-secondary); }
+.diag div span { color: var(--text-muted); }
+
+#notices { padding: 0 var(--gap); display: grid; gap: 8px; }
+#notices:empty { display: none; }
+.notice {
+  border-left: 3px solid var(--warning); padding: 8px 12px;
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
+  border-radius: 0 7px 7px 0; font-size: 12px; color: var(--text-secondary);
+  margin-top: var(--gap);
+}
+.notice strong { color: var(--text-primary); }
+.notice.err { border-left-color: var(--critical); background: color-mix(in srgb, var(--critical) 9%, transparent); }
+
+/* Hold the previous render at reduced opacity on refetch — no skeleton
+   flash, no layout jump. */
+main.stale { opacity: 0.55; transition: opacity 0.15s; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

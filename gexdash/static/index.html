@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gexdash — dealer exposure</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">gexdash</div>
+  <span class="ver">dealer exposure · tier A</span>
+
+  <div class="clock">
+    <div class="k">Market time</div>
+    <div class="v"><span id="clock-time">—</span> <span class="et">ET</span></div>
+  </div>
+  <div class="clock">
+    <div class="k">Phase</div>
+    <div class="v"><span id="clock-phase" class="phase">—</span> <span id="clock-next" class="muted"></span></div>
+  </div>
+
+  <div class="spacer"></div>
+
+  <span class="badge" id="badge-provider">provider —</span>
+  <span class="badge warn" id="badge-synthetic" hidden>synthetic</span>
+  <span class="badge" id="badge-live">paused</span>
+
+  <div class="field">
+    <label for="f-symbol">Ticker</label>
+    <select id="f-symbol" class="ticker"></select>
+  </div>
+  <button id="btn-theme" title="Toggle light / dark">◐</button>
+</header>
+
+<div class="strip">
+  <span><b id="strip-range">—</b> active range</span>
+  <span><b id="strip-strikes">—</b></span>
+  <span><b id="strip-contracts">—</b> live contracts</span>
+  <span id="strip-exercise"></span>
+  <span class="grow"></span>
+  <span id="strip-oi">—</span>
+</div>
+
+<!-- One filter row above everything it scopes. -->
+<div class="filters">
+  <div class="field">
+    <label for="f-window">Expiry window</label>
+    <select id="f-window">
+      <option value="0dte">0DTE only</option>
+      <option value="7dte">≤ 7 DTE</option>
+      <option value="30dte" selected>≤ 30 DTE</option>
+      <option value="60dte">≤ 60 DTE</option>
+      <option value="all">All listed</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="f-sign">Dealer assumption</label>
+    <select id="f-sign">
+      <option value="long_calls_short_puts">Long calls / short puts</option>
+      <option value="short_calls_long_puts">Short calls / long puts</option>
+      <option value="all_long">Raw netted (no flip)</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="f-flip">Flip method</label>
+    <select id="f-flip">
+      <option value="spot_solve">Spot solve (GEX(S)=0)</option>
+      <option value="cumulative">Cumulative by strike</option>
+    </select>
+  </div>
+  <div class="field"><label for="btn-live">Stream</label><button id="btn-live">▶ start</button></div>
+  <div class="field"><label for="btn-refresh">Chain</label><button id="btn-refresh">↻ refetch</button></div>
+  <div class="field"><label for="btn-table">View</label><button id="btn-table">▤ table</button></div>
+</div>
+
+<div id="notices"></div>
+
+<main id="main" class="columns">
+
+  <!-- ─────────────────────────── 1. Market bias ─────────────────────── -->
+  <section class="card col">
+    <h2>Market bias</h2>
+
+    <div class="regime" id="regime">
+      <div class="regime-label" id="regime-label">—</div>
+      <div class="regime-gloss" id="regime-gloss"></div>
+      <div class="regime-src" id="regime-src"></div>
+    </div>
+
+    <div class="tiles" id="exposure-tiles"></div>
+
+    <div class="subcard">
+      <div class="k">GEX concentration</div>
+      <div class="big" id="t-zerodte">—</div>
+      <div class="muted" id="t-zerodte-sub">share of gross gamma expiring today</div>
+    </div>
+
+    <div class="tiles two">
+      <div class="tile"><div class="k">P/C open interest</div><div class="v" id="t-pcoi">—</div></div>
+      <div class="tile"><div class="k">P/C volume</div><div class="v" id="t-pcvol">—</div></div>
+    </div>
+
+    <div class="pcbar"><div class="pcbar-fill" id="pcbar-fill"></div></div>
+    <div class="pcbar-legend">
+      <span><span class="swatch" style="background:var(--series-call)"></span>calls <b id="pc-calls">—</b></span>
+      <span><span class="swatch" style="background:var(--series-put)"></span>puts <b id="pc-puts">—</b></span>
+    </div>
+
+    <div class="tiles wide" id="unavailable-bias"></div>
+  </section>
+
+  <!-- ────────────────────── 2. Spot and GEX levels ───────────────────── -->
+  <section class="card col">
+    <h2>Spot &amp; GEX levels</h2>
+
+    <div class="spot-row">
+      <div>
+        <div class="k">Current spot</div>
+        <div class="hero-value" id="spot">—</div>
+      </div>
+      <div class="spot-meta" id="spot-meta"></div>
+    </div>
+
+    <table class="levels gexlevels">
+      <thead><tr><th>Level</th><th class="num">Exposure</th><th class="num">Strike</th><th class="num">Dist</th></tr></thead>
+      <tbody id="gexlevels-body"></tbody>
+    </table>
+
+    <div class="subcard maxpain">
+      <div class="k">Max pain <span class="muted" id="maxpain-exp"></span></div>
+      <div class="big" id="t-maxpain">—</div>
+    </div>
+
+    <div class="tiles two">
+      <div class="tile"><div class="k">To resistance</div><div class="v" id="t-resist">—</div><div class="why" id="t-resist-sub"></div></div>
+      <div class="tile"><div class="k">To support</div><div class="v" id="t-support">—</div><div class="why" id="t-support-sub"></div></div>
+    </div>
+
+    <div class="tiles two">
+      <div class="tile"><div class="k">Volume POC</div><div class="v" id="t-poc">—</div></div>
+      <div class="tile unavailable"><div class="v">—</div><div class="body"><div class="k">King maker</div><div class="why">proprietary label (tier D)</div></div></div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── 3. Zone analysis ──────────────────────── -->
+  <section class="card col">
+    <h2>Zone analysis</h2>
+
+    <div class="k radar-title">Active level radar</div>
+    <div class="radar" id="radar"></div>
+    <div class="muted radar-note">Levels ordered by price, spot in position.</div>
+
+    <div class="tiles wide" id="unavailable-zone"></div>
+  </section>
+
+  <!-- ───────────────────────── 4. Signal chart ───────────────────────── -->
+  <section class="card col wide-col">
+    <h2>Signal chart <span class="legend" id="chart-legend"></span></h2>
+    <div class="chart-stack" id="charts"></div>
+  </section>
+
+</main>
+
+<div class="card" id="tableview-card" hidden>
+  <h2>All strikes</h2>
+  <div class="tableview" id="tableview"></div>
+</div>
+
+<div class="card">
+  <h2>Model &amp; data provenance</h2>
+  <div class="diag" id="diag"></div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -10,6 +10,7 @@ Base URL: `http://127.0.0.1:8420`. Interactive OpenAPI docs are served at
 | `GET` | `/api/spot` | Current underlying price |
 | `GET` | `/api/stream` | SSE — the surface re-priced on each spot tick |
 | `GET` | `/api/history` | Intraday OHLCV bars + VWAP (optional capability) |
+| `GET` | `/api/breadth` | Exchange market internals + session A/D line (optional) |
 | `POST` | `/api/refresh` | Force a chain pull, bypassing the cache |
 | `GET` | `/api/meta` | Instruments, families, valid parameter values, session |
 | `GET` | `/api/docs` | OpenAPI / Swagger UI |
@@ -199,6 +200,59 @@ The dashboard is fully usable without bars: the exposure surface does not need
 them, so the UI renders the reason where the chart would go rather than an
 empty plot that reads as a loading state. `404` is still returned for an
 unknown `symbol`.
+
+## `GET /api/breadth`
+
+Exchange advance/decline internals for the instrument's family — S&P 500
+instruments get **NYSE**, Nasdaq-100 instruments get **NASDAQ**, keyed off
+`instruments.FAMILIES`.
+
+```bash
+curl "http://127.0.0.1:8420/api/breadth?symbol=SPX"
+curl "http://127.0.0.1:8420/api/breadth?symbol=SPX&exchange=NASDAQ"   # override
+```
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `symbol` | `SPX` | its family selects the exchange |
+| `exchange` | *derived* | `NYSE` or `NASDAQ`; 400 otherwise |
+| `history` | `240` | session A/D samples to return, 0–1000 |
+
+```jsonc
+{"available": true, "exchange": "NYSE",
+ "advancing": 1607, "declining": 1322, "total_issues": 2929,
+ "net": 285,               // derived from the counts shown
+ "net_reported": 285,      // the exchange's own $ADD, used as a cross-check
+ "ad_ratio": 1.22, "label": "NEUTRAL",
+ "up_volume": ..., "down_volume": ..., "volume_ratio": 1.71,
+ "tick": 152, "trin": 0.86,
+ "unresolved": {},                    // {metric: symbol} for tickers that failed
+ "reconciliation_warning": null,      // set when counts disagree with $ADD
+ "scope": "NYSE exchange-wide issues, not index constituents",
+ "history": [{"t": "...", "advancing": ..., "declining": ..., "net": 285}],
+ "cached": false, "cached_seconds": 0.0}
+```
+
+**Read `scope` before reading the numbers.** These are exchange-wide counts —
+`$ADVN`/`$DECN` cover ~3,000 NYSE issues including ETFs and preferreds, not
+the 503 S&P 500 members. Pairing NYSE breadth with an SPX surface is the
+standard trader convention and still a proxy.
+
+**Caching is server-side**, 60s, shared by every client — a browser timer
+would not protect the rate limit, since two open tabs double it. Swapping the
+provider invalidates the cache.
+
+**`reconciliation_warning`** is set when `advancing - declining` disagrees with
+the exchange's own net symbol, which means a ticker in `BREADTH_SYMBOLS` is
+mapped to the wrong series. A wrong mapping otherwise produces entirely
+plausible numbers.
+
+**Unavailability is a `200`:**
+
+```jsonc
+{"available": false, "exchange": "NYSE",
+ "reason": "the mock provider does not supply market internals"}
+```
 
 ## Browser URL parameters
 

@@ -295,3 +295,78 @@ def test_index_serves_both_views(client):
     html = client.get("/").text
     assert 'id="view-terminal"' in html and 'id="view-columns"' in html
     assert 'id="view-terminal-btn"' in html and 'id="view-columns-btn"' in html
+
+
+# ----------------------------------------------------------------------
+# Market internals
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("symbol,exchange", [
+    ("SPX", "NYSE"), ("SPY", "NYSE"), ("ES", "NYSE"),
+    ("NDX", "NASDAQ"), ("QQQ", "NASDAQ"), ("NQ", "NASDAQ"),
+])
+def test_breadth_follows_the_instrument_family(client, symbol, exchange):
+    d = client.get(f"/api/breadth?symbol={symbol}").json()
+    assert d["available"] is True
+    assert d["exchange"] == exchange
+    assert d["advancing"] > 0 and d["declining"] > 0
+    assert d["net"] == d["advancing"] - d["declining"]
+    assert d["reconciliation_warning"] is None
+    assert "not index constituents" in d["scope"]
+
+
+def test_breadth_is_cached_server_side(client):
+    """A client timer would not protect the rate limit: two tabs double it."""
+    first = client.get("/api/breadth?symbol=SPX").json()
+    second = client.get("/api/breadth?symbol=SPX").json()
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert second["advancing"] == first["advancing"], "cache returned a different reading"
+
+
+def test_breadth_accumulates_samples(client):
+    client.get("/api/breadth?symbol=SPX")
+    d = client.get("/api/breadth?symbol=SPX").json()
+    assert isinstance(d["history"], list) and len(d["history"]) >= 1
+    assert all("net" in h and "t" in h for h in d["history"])
+
+
+def test_breadth_reports_unavailable_without_erroring(client, tmp_path):
+    class NoBreadth(MockProvider):
+        get_breadth = None
+
+    set_provider(CachedProvider(NoBreadth(), ChainStore(tmp_path / "nb2.db")))
+    r = client.get("/api/breadth?symbol=SPX")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["available"] is False and "does not supply market internals" in d["reason"]
+
+
+def test_breadth_surfaces_a_typed_unavailable(client, tmp_path):
+    from gexdash.providers.base import BreadthUnavailable
+
+    class Refuses(MockProvider):
+        def get_breadth(self, exchange):
+            raise BreadthUnavailable("entitlement does not cover exchange internals")
+
+    set_provider(CachedProvider(Refuses(), ChainStore(tmp_path / "rb.db")))
+    d = client.get("/api/breadth?symbol=SPX").json()
+    assert d["available"] is False and "entitlement" in d["reason"]
+
+
+def test_breadth_exchange_override(client):
+    d = client.get("/api/breadth?symbol=SPX&exchange=NASDAQ").json()
+    assert d["exchange"] == "NASDAQ"
+    assert client.get("/api/breadth?symbol=SPX&exchange=LSE").status_code == 400
+
+
+def test_market_internals_is_no_longer_claimed_impossible(client):
+    """It moved from an unavailable tile to a served endpoint.
+
+    Only per-constituent movers remains out of reach. Leaving the old tile in
+    place would show a dashed placeholder beside a live A/D count.
+    """
+    d = client.get("/api/exposure?symbol=SPX").json()
+    assert "market_internals" not in d["unavailable"]
+    assert "movers" in d["unavailable"]

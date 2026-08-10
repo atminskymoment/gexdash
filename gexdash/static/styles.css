@@ -462,3 +462,35 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
   border: 1px dashed var(--border); border-radius: 8px;
   color: var(--text-muted); font-size: 12px; line-height: 1.5;
 }
+
+
+/* ────────────────────────── market internals ──────────────────────────── */
+
+.col-stack { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+
+.ad-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.ad-num { font-size: 25px; font-weight: 660; line-height: 1.1; }
+.ad-num.adv { color: var(--pos); }
+.ad-num.dec { color: var(--neg); }
+.ad-mid { text-align: center; }
+.ad-mid .r { font-size: 17px; font-weight: 640; }
+.ad-cap { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+
+/* Advancing vs declining share. Same 2px surface gap as every other
+   two-segment fill on the page. */
+.adbar { height: 7px; border-radius: 4px; background: var(--neg); overflow: hidden; }
+.adbar-fill { height: 100%; background: var(--pos); border-right: 2px solid var(--surface-1); }
+
+.spark { display: block; width: 100%; }
+.spark-line { fill: none; stroke: var(--pos); stroke-width: 1.5; }
+.spark-line.neg { stroke: var(--neg); }
+.spark-zero { stroke: var(--baseline); stroke-width: 1; shape-rendering: crispEdges; }
+
+.internals-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.internals-grid .tile .v { font-size: 14px; }
+
+.scope-note { font-size: 9.5px; color: var(--text-muted); line-height: 1.35; }
+.warn-note {
+  font-size: 10.5px; color: var(--critical); line-height: 1.35;
+  border-left: 2px solid var(--critical); padding-left: 7px;
+}

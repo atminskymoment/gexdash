@@ -40,10 +40,11 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from ..bars import PriceBars, build_bars
+from ..breadth import BreadthSnapshot, build_snapshot, BREADTH_SYMBOLS
 from ..chain import OptionChain, build_chain
 from ..sessions import exchange_today, previous_session
 from ..instruments import Instrument
-from .base import NotAuthenticated, PriceHistoryUnavailable, ProviderError
+from .base import BreadthUnavailable, NotAuthenticated, PriceHistoryUnavailable, ProviderError
 
 AUTH_URL = "https://api.schwabapi.com/v1/oauth/authorize"
 TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
@@ -272,6 +273,51 @@ class SchwabProvider:
             oi_asof=self._infer_oi_date(),
             meta={"provider": "schwab", "symbol": instrument.chain_symbol},
         )
+
+    def get_breadth(self, exchange: str) -> BreadthSnapshot:
+        """Exchange breadth from the thinkorswim internals symbols.
+
+        One batched /quotes call for the whole panel, rather than 500
+        per-constituent quotes. Each metric resolves independently: a ticker
+        that this entitlement does not carry degrades that one field and is
+        reported by name, since the exact symbols vary.
+        """
+        try:
+            table = BREADTH_SYMBOLS[exchange]
+        except KeyError:
+            raise BreadthUnavailable(f"no breadth symbols defined for {exchange!r}") from None
+
+        try:
+            data = self._get("/quotes", {"symbols": ",".join(table.values())})
+        except ProviderError as exc:
+            raise BreadthUnavailable(str(exc)) from None
+
+        values: dict[str, float | None] = {}
+        unresolved: dict[str, str] = {}
+        for metric, symbol in table.items():
+            node = data.get(symbol)
+            value = None
+            if node:
+                quote = node.get("quote", node)
+                for fld in ("lastPrice", "mark", "closePrice", "netChange"):
+                    value = _clean(quote.get(fld))
+                    if value is not None:
+                        break
+            if value is None:
+                unresolved[metric] = symbol
+            values[metric] = value
+
+        if values.get("advancing") is None and values.get("declining") is None:
+            raise BreadthUnavailable(
+                f"{exchange} breadth symbols did not resolve ({table['advancing']}, "
+                f"{table['declining']}). This entitlement may not cover exchange "
+                "internals, or the tickers differ -- see BREADTH_SYMBOLS."
+            )
+
+        if unresolved:
+            log.warning("%s breadth: unresolved symbols %s", exchange, unresolved)
+
+        return build_snapshot(exchange, values, unresolved=unresolved)
 
     def get_price_history(
         self, instrument: Instrument, *, interval_minutes: int = 1, lookback_hours: float = 7.0

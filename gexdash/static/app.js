@@ -28,6 +28,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   data: null,
   bars: null,
+  breadth: null,
   meta: null,
   stream: null,
   showTable: false,
@@ -64,6 +65,11 @@ function priceFmt(v) {
   if (v === null || v === undefined) return "—";
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
+
+/* Issue counts are small integers a reader compares directly (332 vs 170).
+   The K/M abbreviation used for dollar magnitudes destroys that. */
+const issues = (v) =>
+  v === null || v === undefined ? "—" : Math.round(v).toLocaleString("en-US");
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
@@ -179,6 +185,16 @@ async function load() {
   }
 }
 
+async function loadBreadth() {
+  try {
+    const res = await fetch(`/api/breadth?symbol=${$("f-symbol").value}`);
+    state.breadth = await res.json();
+  } catch (err) {
+    state.breadth = { available: false, reason: err.message };
+  }
+  if (state.view === "terminal") renderInternals();
+}
+
 async function loadBars() {
   try {
     const res = await fetch(`/api/history?symbol=${$("f-symbol").value}&interval_minutes=1&lookback_hours=7`);
@@ -280,6 +296,7 @@ function renderTerminal(d) {
   renderExposureH(d);
   renderOrderFlow(d);
   renderPriceChart();
+  renderInternals();
 }
 
 /* ------------------------- candlestick price panel ---------------------- */
@@ -539,7 +556,89 @@ function renderOrderFlow(d) {
   }
 
   $("bias-rows").innerHTML = rows.join("");
-  renderUnavailable("unavailable-terminal", d, ["market_internals", "oi_flow", "speed_engine"]);
+  renderUnavailable("unavailable-terminal", d, ["movers", "oi_flow", "speed_engine"]);
+}
+
+/* --------------------------- market internals -------------------------- */
+
+/** Advance/decline from the exchange internals symbols.
+ *
+ *  Exchange-wide, not index-constituent: $ADVN/$DECN count every NYSE issue
+ *  (~3,000 lines including ETFs and preferreds), not the 503 S&P members. The
+ *  heading names the exchange for that reason.
+ */
+function renderInternals() {
+  const b = state.breadth;
+  const badge = $("internals-label");
+  const host = $("internals-body");
+
+  if (!b || !b.available) {
+    badge.textContent = "unavailable";
+    badge.className = "badge";
+    host.innerHTML = `<div class="nodata" style="min-height:90px">Market internals unavailable${
+      b?.reason ? `<br><span class="small">${esc(b.reason)}</span>` : ""}</div>`;
+    return;
+  }
+
+  badge.textContent = `${b.exchange} · ${b.label}`;
+  badge.className = `badge ${b.label === "POSITIVE" ? "live" : b.label === "NEGATIVE" ? "warn" : ""}`;
+
+  const adv = b.advancing ?? 0, dec = b.declining ?? 0;
+  const share = (adv / Math.max(adv + dec, 1)) * 100;
+
+  const parts = [`
+    <div class="ad-row">
+      <div><div class="ad-num adv">${issues(adv)}</div><div class="ad-cap">advancing</div></div>
+      <div class="ad-mid"><div class="r">${b.ad_ratio ? b.ad_ratio.toFixed(2) : "—"}</div><div class="ad-cap">A/D ratio</div></div>
+      <div style="text-align:right"><div class="ad-num dec">${issues(dec)}</div><div class="ad-cap">declining</div></div>
+    </div>
+    <div class="adbar" style="margin-top:6px"><div class="adbar-fill" style="width:${share}%"></div></div>
+    <div class="pcbar-legend"><span>Net <b>${b.net > 0 ? "+" : ""}${issues(b.net)}</b></span>
+      <span class="muted">${issues(b.total_issues)} issues</span></div>`];
+
+  // Session A/D line, accumulated server-side. Point-in-time quotes give the
+  // counts; the line has to be sampled as the session runs.
+  const hist = (b.history || []).filter((h) => h.net !== null);
+  if (hist.length > 2) {
+    const W = 240, H = 46;
+    const nets = hist.map((h) => h.net);
+    const lo = Math.min(...nets, 0), hi = Math.max(...nets, 0);
+    const rng = Math.max(hi - lo, 1);
+    const x = (i) => (i / (hist.length - 1)) * W;
+    const y = (v) => H - 3 - ((v - lo) / rng) * (H - 6);
+    const pts = nets.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+    parts.push(`<div class="ad-cap" style="margin-top:8px">Session A/D line · ${hist.length} samples</div>
+      <svg class="spark" viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Session advance-decline line">
+        <line class="spark-zero" x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}"/>
+        <polyline class="spark-line${nets[nets.length - 1] < 0 ? " neg" : ""}" points="${pts}"/>
+      </svg>`);
+  } else {
+    parts.push(`<div class="ad-cap" style="margin-top:8px">Session A/D line</div>
+      <div class="scope-note">Accumulating — ${hist.length} sample${hist.length === 1 ? "" : "s"} so far.
+      The line is built from readings taken through the session, not fetched.</div>`);
+  }
+
+  const extra = [];
+  if (b.volume_ratio) extra.push(["Up/down volume", b.volume_ratio.toFixed(2)]);
+  if (b.tick !== null && b.tick !== undefined) extra.push(["TICK", Math.round(b.tick)]);
+  if (b.trin !== null && b.trin !== undefined) extra.push(["TRIN", b.trin.toFixed(2)]);
+  if (extra.length) {
+    parts.push(`<div class="internals-grid" style="margin-top:8px">` +
+      extra.map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("") +
+      `</div>`);
+  }
+
+  if (b.reconciliation_warning) {
+    parts.push(`<div class="warn-note" style="margin-top:8px">${esc(b.reconciliation_warning)}</div>`);
+  }
+  if (b.unresolved && Object.keys(b.unresolved).length) {
+    parts.push(`<div class="scope-note" style="margin-top:6px">Unresolved symbols: ${
+      Object.entries(b.unresolved).map(([k, v]) => `${k} (${v})`).join(", ")}</div>`);
+  }
+  parts.push(`<div class="scope-note" style="margin-top:6px">${esc(b.scope)}.${
+    b.cached_seconds ? ` Cached ${b.cached_seconds}s.` : ""}</div>`);
+
+  host.innerHTML = parts.join("");
 }
 
 /* ═══════════════════════════ COLUMNS VIEW ════════════════════════════ */
@@ -811,6 +910,8 @@ function renderDiagnostics(d) {
     ["Max pain expiry", g.max_pain_expiry ? String(g.max_pain_expiry).slice(0, 10) : "—"],
     ["Chain fetched", d.from_cache ? `cache (${d.cache_age_hours}h old)${d.stale ? " — STALE" : ""}` : "live"],
     ["Price history", state.bars?.available ? `${state.bars.close.length} × ${state.bars.interval_minutes}m` : "unavailable"],
+    ["Market internals", state.breadth?.available
+      ? `${state.breadth.exchange} exchange-wide (not index constituents)` : "unavailable"],
   ];
   if (g.greeks_approximation) items.push(["Approximation", g.greeks_approximation]);
   $("diag").innerHTML = items.map(([k, v]) => `<div><span>${k}:</span> ${esc(v)}</div>`).join("");
@@ -832,8 +933,8 @@ function setView(view, { reload = true } = {}) {
   // not merely unhide.
   if (reload && state.data) render(state.data);
   if (state.view === "terminal") {
-    if (!state.bars) loadBars();
-    else renderPriceChart();
+    if (!state.bars) loadBars(); else renderPriceChart();
+    if (!state.breadth) loadBreadth(); else renderInternals();
   }
 }
 
@@ -844,8 +945,9 @@ function setView(view, { reload = true } = {}) {
 
 $("f-symbol").addEventListener("change", () => {
   state.bars = null;                     // bars are per-instrument
+  state.breadth = null;                  // and the exchange can change with it
   if (state.stream) startStream(); else load();
-  if (state.view === "terminal") loadBars();
+  if (state.view === "terminal") { loadBars(); loadBreadth(); }
 });
 
 ["view-terminal-btn", "view-columns-btn"].forEach((id) =>
@@ -887,7 +989,11 @@ function startStream() {
   // Bars move far more slowly than the exposure surface; refreshing them on
   // every 2s tick would be waste.
   clearInterval(state.barTimer);
-  state.barTimer = setInterval(() => state.view === "terminal" && loadBars(), 30_000);
+  state.barTimer = setInterval(() => {
+    if (state.view !== "terminal") return;
+    loadBars();
+    loadBreadth();   // server-side 60s TTL means this is cheap regardless
+  }, 30_000);
 }
 
 function stopStream() {
@@ -924,4 +1030,4 @@ window.addEventListener("resize", () => {
 });
 
 setView(urlParams.get("view") || localStorage.getItem("gexdash-view") || "terminal", { reload: false });
-loadMeta().then(() => Promise.all([load(), loadBars()])).catch((e) => notice(e.message, true));
+loadMeta().then(() => Promise.all([load(), loadBars(), loadBreadth()])).catch((e) => notice(e.message, true));

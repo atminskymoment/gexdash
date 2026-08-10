@@ -31,13 +31,14 @@ whole surface live without a live OI feed, which does not exist at any price.
 | Module | Responsibility |
 |---|---|
 | `greeks.py` | Vectorized Black-Scholes. Black-76 via the exact `q = r` identity, so there is one code path. No scipy — `math.erf` vectorized is 0.14 ms for 2000 contracts. |
+| `breadth.py` | Exchange market internals from the `$ADVN`/`$DECN` symbol family, plus the counts-vs-net cross-check. |
 | `bars.py` | Intraday OHLCV + VWAP. Optional: a provider that cannot serve bars raises `PriceHistoryUnavailable` and the UI states the reason. |
 | `american.py` | CRR binomial, used **only** to bound the European-approximation error, and the two per-model disclosure notes. Not in the hot path. |
 | `chain.py` | `OptionChain`: parallel numpy arrays, not a list of objects. `with_spot()` shares arrays rather than copying. |
 | `exposure.py` | The engine: per-strike exposure, walls, flip, max pain, concentration, regime. All modelling choices live in `ExposureConfig`. |
 | `instruments.py` | Per-instrument specs — multiplier, model, exercise style, strike step, display width, dividend default. Exercise style is overridable via `GEXDASH_EXERCISE_OVERRIDES`. |
 | `sessions.py` | US exchange session dates and market phase. OI is published on that clock, which is neither UTC nor local. |
-| `store.py` | SQLite chain cache + `CachedProvider`. Not a scheduler. |
+| `store.py` | SQLite chain cache + `CachedProvider`, and the breadth sample table that accumulates the session A/D line. Not a scheduler. |
 | `crosscheck.py` | Diffs our greeks against the provider's; `--fit-rate` solves for the implied rate. |
 | `providers/` | `base.py` protocol, `mock.py` synthetic, `schwab.py` OAuth + chains. |
 | `server.py` | FastAPI + SSE. |
@@ -62,6 +63,12 @@ in `diagnostics`, and rendered in the UI's provenance panel.
 `GEXDASH_HOME`, so building it at import time would mean importing the module
 for a test writes to the real `~/.gexdash`. `get_provider()` / `set_provider()`
 instead.
+
+**Optional capabilities are separate protocols.** `ChainProvider` stays two
+methods; `PriceHistoryProvider` and `BreadthProvider` are their own protocols
+with their own typed `…Unavailable` errors. Each endpoint returns `200` with a
+reason rather than an error status, because nothing on the exposure surface
+depends on either. The pattern is now used three times and is mechanical.
 
 **Degrade, don't fail.** If the provider is unreachable and the cached chain
 is stale, the last good snapshot is served with `stale: true`. A few-hours-old

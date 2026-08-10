@@ -26,9 +26,9 @@ Switch in the header, or link directly with `?view=`:
 
 Both render the same `/api/exposure` payload and share their chart
 primitives, so the two cannot disagree. The terminal view additionally uses
-`/api/history` for candles — an **optional** capability: a provider that
-cannot serve bars gets a stated reason where the chart would be, and every
-other panel is unaffected.
+`/api/history` for candles and `/api/breadth` for market internals. Both are
+**optional** capabilities: a provider that cannot serve them gets a stated
+reason where the panel would be, and everything else is unaffected.
 
 ---
 
@@ -56,7 +56,8 @@ placeholders with the reason — never as a plausible-looking number.
 | OI flow, volume bias, intraday OI change | needs classified trade prints (tier B) |
 | Speed engine | needs underlying time-and-sales (tier C) |
 | Kinetics, dealer regime, zone state, king maker | proprietary labels — define your own (tier D) |
-| Market internals (A/D, gainers/losers) | needs per-constituent quotes for all index members — a different asset class, not options data |
+| Market internals — advancing/declining, A/D ratio, TICK, TRIN, session A/D line | computed from the **exchange breadth symbols** (`$ADVN`/`$DECN`, `$ADVQ`/`$DECQ`) |
+| Top gainers / losers | needs per-constituent quotes for every index member — a separate feed |
 
 ---
 
@@ -183,6 +184,7 @@ setting.
 ```
 gexdash/
   bars.py         intraday OHLCV + VWAP for the terminal view's price panel
+  breadth.py      exchange market internals from the $ADVN/$DECN symbol family
   greeks.py       vectorized Black-Scholes; Black-76 via the q = r identity
   american.py     CRR binomial — bounds the SPY/QQQ approximation error
   exposure.py     exposure surface, walls, flip, max pain, regime
@@ -208,7 +210,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 223 tests, ~6s
+python -m pytest tests/ -q      # 255 tests, ~7s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76
@@ -224,6 +226,11 @@ to the obvious test — see
 ---
 
 ## Fees, briefly
+
+Two different tapes are in play. **Options** data is OPRA; the **breadth
+symbols are exchange equity data** (CTA/UTP), licensed separately with its own
+personal-versus-redistribution cliff. Both are covered for personal use by a
+brokerage entitlement.
 
 OPRA subscriber fees are separate from any vendor subscription:
 **$1.25/user/month** non-professional, **$31.50** professional,

@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from ..bars import PriceBars
+from ..breadth import BreadthSnapshot
 from ..chain import OptionChain
 from ..instruments import Instrument
 
@@ -61,12 +62,39 @@ class PriceHistoryProvider(Protocol):
         ...
 
 
+@runtime_checkable
+class BreadthProvider(Protocol):
+    """**Optional** capability: exchange market-internals (advance/decline).
+
+    Same contract as :class:`PriceHistoryProvider` — the exposure surface does
+    not need breadth, so a provider that cannot serve it says so and the panel
+    states the reason.
+    """
+
+    def get_breadth(self, exchange: str) -> BreadthSnapshot:
+        """Fetch breadth for ``"NYSE"`` or ``"NASDAQ"``.
+
+        Raise :class:`BreadthUnavailable` when unsupported — an expected
+        outcome, not a bug.
+        """
+        ...
+
+
 class ProviderError(RuntimeError):
     """Raised when a provider cannot serve a request."""
 
 
 class NotAuthenticated(ProviderError):
     """Raised when credentials are missing or the token chain has expired."""
+
+
+class BreadthUnavailable(ProviderError):
+    """This provider cannot serve market internals.
+
+    Expected, not a failure: the panel renders the reason. Note the breadth
+    symbols are *exchange* series, so an entitlement that covers option chains
+    does not necessarily cover them.
+    """
 
 
 class PriceHistoryUnavailable(ProviderError):

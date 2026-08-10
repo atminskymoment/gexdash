@@ -27,6 +27,15 @@ from .instruments import Instrument, get as get_instrument
 DEFAULT_DB = Path(os.environ.get("GEXDASH_HOME", Path.home() / ".gexdash")) / "chains.db"
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS breadth_sample (
+    exchange   TEXT NOT NULL,
+    sampled_at TEXT NOT NULL,
+    advancing  REAL,
+    declining  REAL,
+    net        REAL,
+    PRIMARY KEY (exchange, sampled_at)
+);
+
 CREATE TABLE IF NOT EXISTS chain_snapshot (
     instrument   TEXT NOT NULL,
     snapshot_day TEXT NOT NULL,
@@ -127,6 +136,40 @@ class ChainStore:
         if data.get("provider_gamma") is not None:
             chain.provider_gamma = np.array(data["provider_gamma"], dtype=float)
         return chain
+
+    # ------------------------------------------------------------------
+    # Breadth samples
+    #
+    # Point-in-time quotes give the counts; the A/D *line* through a session
+    # is cumulative and has to be accumulated as the session runs. This is
+    # that accumulation -- the same reason snapshots are keyed by date rather
+    # than overwritten.
+    # ------------------------------------------------------------------
+
+    def save_breadth(self, exchange: str, advancing, declining, net, when: datetime | None = None) -> None:
+        when = when or datetime.now(timezone.utc)
+        # Bucketed to the minute: at a 60s server TTL this is one row per
+        # minute per exchange, and re-fetches inside a bucket overwrite
+        # rather than accumulating duplicates.
+        bucket = when.replace(second=0, microsecond=0).isoformat()
+        self._conn.execute(
+            "INSERT OR REPLACE INTO breadth_sample (exchange, sampled_at, advancing, declining, net) "
+            "VALUES (?,?,?,?,?)",
+            (exchange, bucket, advancing, declining, net),
+        )
+        self._conn.commit()
+
+    def breadth_history(self, exchange: str, limit: int = 240) -> list[dict]:
+        """Most recent samples, oldest first."""
+        rows = self._conn.execute(
+            "SELECT sampled_at, advancing, declining, net FROM breadth_sample "
+            "WHERE exchange = ? ORDER BY sampled_at DESC LIMIT ?",
+            (exchange, limit),
+        ).fetchall()
+        return [
+            {"t": r[0], "advancing": r[1], "declining": r[2], "net": r[3]}
+            for r in reversed(rows)
+        ]
 
     def snapshot_days(self, instrument: Instrument | str) -> list[date]:
         key = instrument if isinstance(instrument, str) else instrument.key

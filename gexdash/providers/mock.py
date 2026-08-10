@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 
 from ..bars import PriceBars, build_bars
+from ..breadth import BreadthSnapshot, build_snapshot
 from ..chain import OptionChain, build_chain
 from ..sessions import previous_session
 from ..instruments import ES, SPX, Instrument
@@ -56,6 +57,7 @@ class MockProvider:
         # default_rng rejects a negative seed. A persistent generator is both
         # correct and more genuinely reproducible.
         self._rng = np.random.default_rng(seed)
+        self._breadth_drift: dict[str, float] = {}
 
     # ------------------------------------------------------------------
 
@@ -65,6 +67,42 @@ class MockProvider:
         # be 3% on a $776 ETF and invisible on a 29,800 index.
         self._drift = float(np.clip(self._drift + self._rng.normal(0, 4.5e-5), -0.0035, 0.0035))
         return round(base * (1.0 + self._drift), 2)
+
+    def get_breadth(self, exchange: str) -> BreadthSnapshot:
+        """Synthesize exchange breadth.
+
+        Issue counts are scaled to each exchange's rough listing count so the
+        magnitudes read plausibly (NYSE ~3,000 lines, Nasdaq ~4,300). The net
+        is derived from the counts, so the cross-check in build_snapshot
+        passes -- a mock that failed its own integrity check would train you
+        to ignore the warning.
+        """
+        rng = np.random.default_rng(self.seed + (2_000 if exchange == "NYSE" else 3_000))
+        total = 3000 if exchange == "NYSE" else 4300
+
+        # Drift the tilt across calls, or every sample is identical and the
+        # session A/D line renders dead flat -- which would read as a bug in
+        # the sparkline rather than a property of the mock.
+        self._breadth_drift[exchange] = float(np.clip(
+            self._breadth_drift.get(exchange, 0.0) + self._rng.normal(0, 0.006), -0.09, 0.09))
+        tilt = float(np.clip(rng.uniform(0.46, 0.56) + self._breadth_drift[exchange], 0.2, 0.8))
+        advancing = float(int(total * tilt))
+        declining = float(int(total * (1 - tilt) * 0.95))
+        up_vol = float(int(rng.uniform(0.6, 2.4) * 1e9 * tilt))
+        down_vol = float(int(rng.uniform(0.6, 2.4) * 1e9 * (1 - tilt)))
+
+        return build_snapshot(
+            exchange,
+            {
+                "advancing": advancing,
+                "declining": declining,
+                "net": advancing - declining,
+                "up_volume": up_vol,
+                "down_volume": down_vol,
+                "tick": float(int(rng.normal(0, 450))),
+                "trin": round(float(rng.uniform(0.55, 1.6)), 2),
+            },
+        )
 
     def get_price_history(
         self, instrument: Instrument, *, interval_minutes: int = 1, lookback_hours: float = 7.0

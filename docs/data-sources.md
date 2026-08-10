@@ -82,6 +82,41 @@ Requesting a futures chain prints a warning saying so. Verify with
 `SchwabProvider().get_chain(instruments.ES)` once authenticated. If it does
 not resolve, route the futures legs to a CME-carrying provider.
 
+### Optional: market internals
+
+Advance/decline comes from the **exchange breadth symbols** that thinkorswim
+and the Schwab API expose as ordinary quotables, so the whole panel costs one
+batched `/quotes` call rather than 500 per-constituent quotes:
+
+| Metric | NYSE | Nasdaq |
+|---|---|---|
+| advancing | `$ADVN` | `$ADVQ` |
+| declining | `$DECN` | `$DECQ` |
+| net (cross-check) | `$ADD` | `$ADQDC` |
+| up / down volume | `$UVOL` / `$DVOL` | `$UVOLQ` / `$DVOLQ` |
+| TICK / TRIN | `$TICK` / `$TRIN` | `$TICKQ` / `$TRINQ` |
+
+Two things to know:
+
+- **These are exchange-wide, not index-constituent.** `$ADVN`/`$DECN` count
+  every NYSE issue — roughly 3,000 lines including ETFs, preferreds and
+  closed-end funds — not the 503 S&P 500 members. Pairing NYSE breadth with an
+  SPX exposure surface is the standard convention and still a proxy; many S&P
+  members are Nasdaq-listed. The UI names the exchange, not the index.
+- **Every metric resolves independently.** A ticker your entitlement does not
+  carry degrades that one field and is reported by name, rather than failing
+  the panel. Correct it in `BREADTH_SYMBOLS` in `gexdash/breadth.py`.
+
+The counts are fetched separately from the net symbol and reconciled against
+it. A mismatch means a symbol is mapped to the wrong series — which would
+otherwise produce entirely plausible numbers, this project's recurring failure
+mode.
+
+**Licensing note:** the breadth symbols are exchange *equity* data (CTA/UTP),
+a different tape from OPRA. The fee section below is OPRA-specific; live
+equity quotes carry their own separate licensing with the same
+personal-versus-redistribution cliff.
+
 ## Other providers
 
 Prices as of research in August 2026 — **re-check before committing**, these

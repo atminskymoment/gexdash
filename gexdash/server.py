@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,7 +31,14 @@ from . import exposure, instruments
 from .exposure import EXPIRY_WINDOWS, ExposureConfig
 from .providers import build_provider
 from .sessions import market_phase
-from .providers.base import PriceHistoryProvider, PriceHistoryUnavailable, ProviderError
+from .breadth import FAMILY_EXCHANGE, symbols_for_family
+from .providers.base import (
+    BreadthProvider,
+    BreadthUnavailable,
+    PriceHistoryProvider,
+    PriceHistoryUnavailable,
+    ProviderError,
+)
 from .store import CachedProvider, ChainStore
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -56,9 +64,15 @@ def get_provider() -> CachedProvider:
 
 
 def set_provider(provider: CachedProvider) -> None:
-    """Override the provider (tests, or an alternate data source)."""
+    """Override the provider (tests, or an alternate data source).
+
+    Invalidates the breadth cache: it is keyed by exchange, not by provider,
+    so a swap would otherwise keep serving the previous provider's readings
+    until the TTL expired.
+    """
     global _provider
     _provider = provider
+    _breadth_cache.clear()
 
 
 def _config(
@@ -135,13 +149,28 @@ UNAVAILABLE_TILES = {
     "zone_state": "proprietary label - define your own thresholds (tier D)",
     "speed_engine": "needs underlying time-and-sales (tier C)",
     "king_maker": "proprietary label (tier D)",
-    # Not the same kind of gap as the others. Every tile above needs a *trade
-    # feed* for this instrument; advancing/declining counts, A/D ratio and
-    # gainers/losers need per-constituent quotes for all 500 index members --
-    # a different asset class entirely, and not something the OHLC work brings
-    # with it.
-    "market_internals": "needs per-constituent equity quotes for the whole index - a separate feed, not options data",
+    # Top gainers/losers still needs per-constituent quotes for every index
+    # member. Exchange breadth (advancing/declining/TICK/TRIN) does NOT --
+    # it comes from the exchange internals symbols and is served by
+    # /api/breadth. The two were one tile until the breadth symbols made half
+    # of it reachable.
+    "movers": "needs per-constituent equity quotes for every index member - a separate feed",
 }
+
+
+def _breadth_source():
+    """The underlying provider, unwrapped from CachedProvider."""
+    provider = get_provider()
+    return getattr(provider, "provider", provider)
+
+
+#: Server-side breadth cache: {exchange: (fetched_at, payload)}.
+#:
+#: A client-side timer would not protect the rate limit -- two open tabs
+#: double the request rate, and the timer lives in the browser. Breadth moves
+#: over minutes, so every client is served from one cached reading.
+_BREADTH_TTL_SECONDS = 60.0
+_breadth_cache: dict[str, tuple[float, dict]] = {}
 
 
 @app.get("/api/exposure")
@@ -282,6 +311,72 @@ async def api_history(
     return payload
 
 
+@app.get("/api/breadth")
+async def api_breadth(
+    symbol: str = Query("SPX", description="instrument; its family selects the exchange"),
+    exchange: str | None = Query(None, description="override: NYSE or NASDAQ"),
+    history: int = Query(240, ge=0, le=1000),
+):
+    """Exchange market internals for the instrument's family.
+
+    Served from a server-side 60s cache shared by every client. Returns 200
+    with ``{"available": false, "reason": ...}`` when the provider cannot
+    serve breadth -- nothing else on the dashboard depends on it.
+    """
+    inst = _resolve(symbol)
+    if exchange is None:
+        family = next((f for f, keys in instruments.FAMILIES.items() if inst.key in keys), None)
+        exchange = FAMILY_EXCHANGE.get(family, "NYSE")
+    exchange = exchange.upper()
+    if exchange not in FAMILY_EXCHANGE.values():
+        raise HTTPException(400, f"exchange must be one of {sorted(set(FAMILY_EXCHANGE.values()))}")
+
+    source = _breadth_source()
+    if not isinstance(source, BreadthProvider):
+        return {"available": False, "exchange": exchange,
+                "reason": f"the {get_provider().name} provider does not supply market internals"}
+
+    cached = _breadth_cache.get(exchange)
+    now = time.monotonic()
+    if cached and now - cached[0] < _BREADTH_TTL_SECONDS:
+        payload = dict(cached[1])
+        # An explicit flag, not an inferred one: two calls inside the same
+        # tenth of a second both round to 0.0s, so a duration cannot signal
+        # a cache hit.
+        payload["cached"] = True
+        payload["cached_seconds"] = round(now - cached[0], 1)
+    else:
+        try:
+            snap = await asyncio.to_thread(source.get_breadth, exchange)
+        except BreadthUnavailable as exc:
+            return {"available": False, "exchange": exchange, "reason": str(exc)}
+        except ProviderError as exc:
+            return {"available": False, "exchange": exchange, "reason": f"provider error: {exc}"}
+
+        payload = snap.to_dict()
+        payload["available"] = True
+        payload["cached"] = False
+        payload["cached_seconds"] = 0.0
+        payload["symbols"] = symbols_for_family(
+            next((f for f, keys in instruments.FAMILIES.items() if inst.key in keys), "S&P 500")
+        )[1]
+        _breadth_cache[exchange] = (now, payload)
+
+        # Accumulate the session A/D line: point-in-time quotes give the
+        # counts, the line has to be built as the session runs.
+        try:
+            get_provider().store.save_breadth(exchange, snap.advancing, snap.declining, snap.net)
+        except Exception:  # a sample failing to persist must not fail the read
+            pass
+
+    if history:
+        try:
+            payload["history"] = get_provider().store.breadth_history(exchange, limit=history)
+        except Exception:
+            payload["history"] = []
+    return payload
+
+
 @app.get("/api/meta")
 async def api_meta():
     return {
@@ -303,6 +398,7 @@ async def api_meta():
         "flip_methods": ["spot_solve", "cumulative"],
         "provider": get_provider().name,
         "views": ["columns", "terminal"],
+        "exchanges": FAMILY_EXCHANGE,
     }
 
 

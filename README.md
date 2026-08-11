@@ -58,6 +58,7 @@ placeholders with the reason — never as a plausible-looking number.
 | Kinetics, dealer regime, zone state, king maker | proprietary labels — define your own (tier D) |
 | Market internals — advancing/declining, A/D ratio, TICK, TRIN, session A/D line | computed from the **exchange breadth symbols** (`$ADVN`/`$DECN`) |
 | Candles 1m–monthly over 1 day–10 years, zoom/pan, crosshair, RSI+MA(20) · MACD · ADX/DI | computed; **sub-minute bars need a tick feed** and are refused with that reason |
+| Written reading — what the current GEX/DEX/vanna/charm and levels imply, together | computed by a fixed rule set; **withheld** when there is no open interest to read |
 | Top gainers / losers | needs per-constituent quotes for every index member — a separate feed |
 
 ---
@@ -139,6 +140,29 @@ dividend default — applying the S&P's 1.3% to QQQ would be wrong.
 
 ---
 
+## When the feed misbehaves
+
+Bad data that looks like good data is the failure mode this project spends the
+most effort on. Two cases are handled explicitly rather than displayed.
+
+**A chain with no open interest.** Observed live: 16,862 SPX contracts with OI
+on 2 of them, volume populated, no error. Every exposure measure is
+proportional to OI, so the surface reads `$0` — a confident number, not a gap.
+Detected by OI *coverage* (healthy chains run 34–73% of contracts; that one was
+0.01%), never cached over a good snapshot, and the last usable chain is served
+instead with the reason stated. With nothing to fall back on, the tiles read
+`n/a` and the written reading is withheld entirely. Retries back off
+30s → 60s → 120s → 240s → 480s; ↻ refetch bypasses it.
+
+**A range that cannot be served exactly.** A year of 1-minute bars exists
+nowhere. Rather than quietly substituting, the request is adjusted and the
+adjustment is reported: the bar size coarsens and says so, over-fetches are
+trimmed back to the range and say so, and sub-minute intervals are refused
+outright with the reason. Combinations the feed cannot serve are greyed out in
+the selector rather than being accepted and silently changed.
+
+---
+
 ## Verifying the greeks
 
 Vanna and charm are self-computed and unverifiable downstream: a wrong rate
@@ -178,6 +202,33 @@ checks pass in light and dark (worst adjacent CVD ΔE 21.6–26.8, target ≥ 8)
 Light is the default; dark is opt-in via the toggle, `?theme=dark`, or the OS
 setting.
 
+### The price panel
+
+Ranges `1D`–`10Y` against intervals `1m`–`1Mo`, zoom and pan, and the dealer
+levels — call/put wall, gamma flip, max pain, max ±GEX, volume POC — drawn as
+price lines. A level outside the visible range is pinned to the edge with a
+direction arrow rather than dropped, because "indicate the walls" has to hold
+when a wall is far away.
+
+Below it, RSI with a 20-period MA, MACD, and ADX/DI — computed server-side in
+`indicators.py` so they can be tested. Wilder's smoothing is `alpha = 1/n`,
+not the `2/(n+1)` of a same-length EMA; substituting one for the other is the
+classic way RSI and ADX come out subtly and permanently wrong.
+
+Three details that are deliberate rather than incidental:
+
+- **Ten empty bar slots to the right of the last candle.** The current bar is
+  the one you look at most, and pinning it against the axis leaves nowhere for
+  its tag and no room to read where price is heading.
+- **The crosshair survives a refresh.** Re-rendering rebuilds the SVG, and a
+  naive implementation drops the crosshair until the pointer next moves — so
+  while streaming it blinks out every few seconds under a stationary cursor.
+- **Indicator warm-up is `null`, never `0`.** RSI does not exist for its first
+  14 bars. The line breaks; it does not travel along the axis.
+
+The bottom-left readout follows the cursor with the hovered bar's OHLC and
+RSI, and falls back to the most recent bar when the pointer is away.
+
 ---
 
 ## Layout
@@ -191,10 +242,11 @@ gexdash/
   greeks.py       vectorized Black-Scholes; Black-76 via the q = r identity
   american.py     CRR binomial — bounds the SPY/QQQ approximation error
   exposure.py     exposure surface, walls, flip, max pain, regime
+  interpretation.py  the written reading -- server-side so the wording is tested
   chain.py        option chain as parallel numpy arrays
   instruments.py  per-instrument specs
   sessions.py     US exchange session dates and market phase
-  store.py        SQLite chain cache + CachedProvider
+  store.py        SQLite chain cache, CachedProvider, degraded-feed policy
   crosscheck.py   diff our greeks against the provider's
   server.py       FastAPI + SSE
   providers/      mock (synthetic) and schwab
@@ -213,7 +265,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 352 tests, ~10s
+python -m pytest tests/ -q      # 397 tests, ~10s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76
@@ -222,8 +274,10 @@ known answers, contract multipliers against published specs, Schwab response
 parsing without network, store round-trips, cross-check sensitivity to a wrong
 rate, and the full API surface including SSE and the stale-cache fallback.
 
-Five of them are regressions for bugs found during the build, each invisible
-to the obvious test — see
+A good number of them are regressions for bugs found during the build, each
+invisible to the obvious test: a chart that drew a year under a "3M" label, a
+chain of zeros cached over a good one, and an interpretation sentence that
+called a level below spot "above" it. See
 [architecture.md](docs/architecture.md#regression-tests-worth-knowing-about).
 
 ---

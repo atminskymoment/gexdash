@@ -37,6 +37,32 @@ surface never needed price history. Schwab implements it for the index and ETF
 symbols via `/marketdata/v1/pricehistory` and refuses the futures roots with
 the same unverified caveat as their chains.
 
+#### What `/pricehistory` actually accepts
+
+Established by probing the live endpoint, not from documentation. The
+combinations matter because the wrong one is not an error — it returns a
+perfectly good chart covering the wrong span.
+
+| Bar size | Accepted `periodType` | Reach |
+|---|---|---|
+| minute (1, 5, 10, 15, 30 only) | `day` | **10 days** back |
+| daily | `month`, `year`, `ytd` | 10 years |
+| weekly | `month`, `year`, `ytd` | 20 years |
+| monthly | `year` **only** | 20 years |
+
+Three consequences the code has to carry:
+
+- **`frequency` 60 and 240 are rejected.** Hourly, 2-hour and 4-hour bars are
+  aggregated locally from 30-minute bars, the largest native size.
+- **`periodType=day` serves minute frequencies only.** There is no short
+  period for daily bars, so a 5-day daily chart must request a month and trim.
+- **`periodType=month` with `frequencyType=monthly` returns 400**, which is
+  why monthly is the one bar size still mapped to whole-year periods.
+
+There are **no sub-minute bars at any period**. One-second candles need a tick
+or streaming feed; the request is refused with that reason rather than
+silently rounded up to a minute.
+
 ## Schwab — free, and the recommended start
 
 Free with a brokerage account, and the same data behind thinkorswim. It is a
@@ -111,6 +137,21 @@ The counts are fetched separately from the net symbol and reconciled against
 it. A mismatch means a symbol is mapped to the wrong series — which would
 otherwise produce entirely plausible numbers, this project's recurring failure
 mode.
+
+### Open interest can arrive empty
+
+Not a hypothetical. Schwab has served a complete, well-formed SPX chain of
+16,862 contracts with open interest on **2** of them — 896 in total, none
+inside the ≤30 DTE window — with volume populated and no error anywhere.
+
+Every exposure measure is proportional to OI, so this renders as a dashboard
+of `$0` tiles: a confident claim about the market rather than a failed fetch.
+It appears to happen around the session boundary and clears on its own.
+
+`CachedProvider` detects it by OI *coverage*, keeps serving the last usable
+snapshot, and never writes the empty chain to the cache. See
+[methodology §9](methodology.md#9-detecting-a-chain-that-is-not-there) for the
+threshold and the measurements behind it.
 
 **Licensing note:** the breadth symbols are exchange *equity* data (CTA/UTP),
 a different tape from OPRA. The fee section below is OPRA-specific; live

@@ -113,11 +113,58 @@ curl "http://127.0.0.1:8420/api/exposure?symbol=SPX&expiry_window=30dte"
   // the reason. Rendered as explicit placeholders, never as numbers.
   "unavailable": {"oi_flow": "needs classified trade prints (tier B)", ...},
 
+  // Plain-language reading of the numbers above, built server-side so the
+  // wording is testable. `null` when `oi_unavailable` — a surface of zeros
+  // has nothing to interpret. See methodology §10.
+  "interpretation": {
+    "headline": "SUPPRESSED",
+    "headline_gloss": "Dealers dampen moves — mean reversion toward walls",
+    "readings": [
+      {"key": "gex", "label": "Net GEX", "value": 8.23e9, "tone": "pos",
+       "meaning": "Dealers are long gamma, so they hedge against the move …",
+       "caveat": null},
+      // `caveat` is set where a reading is an artefact of a chosen
+      // assumption rather than a measurement — DEX under an assumed
+      // dealer sign convention, for instance.
+      {"key": "dex", "…": "…", "caveat": "This is dominated by the dealer sign …"}
+    ],
+    "synthesis": ["Taken together: damped, but conditionally. …"],
+    "caveats": ["Open interest is the OCC snapshot for 2026-08-07 — …"],
+    "derivation": "Derived from the exposure numbers on this page by a fixed rule set …"
+  },
+
   "provider": "mock", "synthetic": true,
   "from_cache": true, "stale": false, "cache_age_hours": 1.54,
+
+  // Set when the chain on screen is not a clean current fetch. `stale` says
+  // the data is not fresh; `degraded_reason` says why, in words meant for
+  // display. `oi_unavailable` means the exposure numbers could not be
+  // computed at all and must be rendered as unavailable, never as zero —
+  // every measure is proportional to OI, so they would all read $0.
+  "degraded_reason": null,
+  "oi_unavailable": false,
+
   "server_time": "2026-08-10T00:51:15+00:00"
 }
 ```
+
+### Degraded responses
+
+A chain can arrive intact but carry no open interest — a failed fetch that
+looks like a successful one. Because every exposure measure is proportional to
+OI, the whole surface collapses to `0`, which renders as a confident statement
+about the market rather than as missing data.
+
+When that is detected (see [methodology §9](methodology.md#9-detecting-a-chain-that-is-not-there)):
+
+| Situation | Response |
+|---|---|
+| A previous snapshot with real OI exists | That snapshot, `stale: true`, `degraded_reason` set. The empty chain is never written to the cache. |
+| No usable snapshot exists | The empty chain, `oi_unavailable: true`, `interpretation: null`. Clients must render the affected metrics as unavailable. |
+
+The provider is not re-asked immediately: retries back off `30s → 60s → 120s
+→ 240s → 480s`, resetting on the first good chain. `POST /api/refresh` bypasses
+the back-off.
 
 ### Status codes
 
@@ -172,22 +219,59 @@ doubling the SSE payload every 2 seconds to redraw candles that shifted by one
 bar would be waste. The client refreshes them on a 30-second timer.
 
 ```bash
-curl "http://127.0.0.1:8420/api/history?symbol=SPX&interval_minutes=1&lookback_hours=7"
+curl "http://127.0.0.1:8420/api/history?symbol=SPX&range=3M&interval=1D"
 ```
 
 | Parameter | Default | Range |
 |---|---|---|
 | `symbol` | `SPX` | any instrument |
-| `interval_minutes` | `1` | 1–60 (Schwab snaps to 1/5/10/15/30) |
-| `lookback_hours` | `7.0` | 0–48 |
+| `range` | `1D` | `1D` `5D` `10D` `1M` `3M` `6M` `YTD` `1Y` `2Y` `5Y` `10Y` |
+| `interval` | `1m` | `1m` `5m` `10m` `15m` `30m` `1h` `2h` `4h` `1D` `1W` `1Mo` |
+| `indicators` | `true` | include RSI + MA(20), MACD and ADX/DI |
+| `interval_minutes` | *unset* | **deprecated** legacy form, still honoured |
+| `lookback_hours` | *unset* | **deprecated** legacy form, still honoured |
+
+Not every pair is servable, and `/api/meta` carries the matrix so the UI can
+grey out the rest rather than let you pick one and silently receive something
+else. Where a request cannot be served exactly it is adjusted and the
+adjustment is reported in `plan.notes` — never applied quietly.
 
 ```jsonc
 {"available": true, "symbol": "SPX", "interval_minutes": 1,
  "time": ["2026-08-09T19:10:00", ...],
  "open": [...], "high": [...], "low": [...], "close": [...], "volume": [...],
  "vwap": [...],                       // running session VWAP, volume-weighted
- "session_low": 7722.4, "session_high": 7787.6, "synthetic": true}
+ "session_low": 7722.4, "session_high": 7787.6, "synthetic": true,
+
+ "indicators": {
+   "rsi": [...], "rsi_ma": [...],     // nulls through the warm-up, never zeros
+   "macd": [...], "macd_signal": [...], "macd_histogram": [...],
+   "adx": [...], "di_plus": [...], "di_minus": [...],
+   "params": {"rsi_length": 14, "rsi_ma_length": 20, "adx_length": 14,
+              "macd": [12, 26, 9],
+              "smoothing": "Wilder for RSI/ADX, conventional EMA for MACD"}
+ },
+
+ // How the request was actually served.
+ "plan": {"range": "3M", "interval_requested": "1D", "interval_served": "1D",
+          "aggregated_from_minutes": null,
+          "provider_request": {"periodType": "month", "period": 3,
+                               "frequencyType": "daily", "frequency": 1},
+          "notes": []}}
 ```
+
+`interval_served` differs from `interval_requested` when a bar size is not
+available over that span — a year of 1-minute bars exists nowhere, so the
+range is kept and the bar size coarsens, with the substitution stated in
+`notes`. Sub-minute intervals are refused outright with a `400` rather than
+rounded up to a minute.
+
+Requests that must over-fetch are trimmed back to the range and say so: the
+feed's shortest daily period is one month, so `5D` + `1D` fetches a month and
+drops the oldest bars. The trim counts bars rather than filtering on a
+wall-clock cutoff, because the newest real bar can legitimately be older than
+the window — ask for `1D` before Monday's open and the last session is
+Friday's.
 
 **This capability is optional**, and unavailability is a `200`, not an error:
 

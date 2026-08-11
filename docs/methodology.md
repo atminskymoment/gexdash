@@ -230,7 +230,81 @@ None of this is a prediction. It restates the exposure numbers in words and
 inherits every assumption behind them, above all the dealer sign convention,
 which decides the sign of GEX in the first place.
 
-## 9. What this cannot do
+## 9. Detecting a chain that is not there
+
+A chain can arrive complete, well-formed and carrying no open interest. Every
+exposure measure in §3 is proportional to OI, so the whole surface collapses
+to exactly zero — and a dashboard of `$0` tiles reads as a confident statement
+about the market rather than as a failed fetch.
+
+Observed live, not hypothesised: Schwab served an SPX chain of 16,862
+contracts with open interest on **2** of them, 896 contracts in total, none
+inside the ≤30 DTE window, with volume populated and no error anywhere.
+
+### The test is coverage, not total
+
+"Any open interest at all" passes that chain — those 2 contracts satisfy it.
+An absolute floor would have to be calibrated per instrument, since SPY
+carries millions and a quiet single name does not. What separates the cases is
+the **share of listed contracts carrying any OI**, sampled across one live
+entitlement:
+
+| Chain | Contracts with OI |
+|---|---|
+| SPY | 72.7% |
+| QQQ | 68.3% |
+| NDX | 34.3% |
+| SPX *(degraded)* | **0.01%** |
+
+The floor is **1%** — roughly 34× below the thinnest healthy reading, and far
+above the degraded one. A genuinely thin chain is one where few contracts are
+*listed* and most are held; that passes comfortably. Thousands listed with two
+held is a feed declining to answer.
+
+### What happens then
+
+The empty chain is **never written to the cache** — otherwise it displaces the
+good snapshot behind it and is served all day as if it were fine. Instead the
+last snapshot that carried a real OI surface is served, marked stale with the
+reason. If no usable snapshot exists, the response sets `oi_unavailable` and
+the client renders the metrics as unavailable rather than as zero.
+
+Retries back off `30s → 60s → 120s → 240s → 480s`, resetting on the first good
+chain. Short first because the common case is transient — the feed drops OI
+around the session boundary and returns within a minute or two — and doubling
+after that because one SPX attempt is four paginated requests and ~17k
+contracts. An explicit refetch bypasses the back-off.
+
+## 10. The written reading
+
+The dashboard states, in words, what the current numbers imply. That is more
+dangerous than any chart: a confident sentence is believed in a way a plot is
+not, and an inverted comparison still reads fluently. The rules are therefore
+in `gexdash/interpretation.py` — server-side, so they are testable — and each
+directional claim has a test.
+
+Three rules the text holds to:
+
+1. **Restate, never predict.** "Dealers sell into strength" describes a
+   hedging mechanic implied by positive gamma. It does not say the market
+   will fall.
+2. **Assumptions travel with the claim.** DEX is large by construction under
+   an assumed dealer sign convention (§4), so that caveat renders beside DEX
+   rather than in a footnote — and disappears under `all_long`.
+3. **Nothing comparative in absolute currency.** "$8B of gamma" means nothing
+   without knowing the instrument. Distances are percentages of spot, so they
+   carry unchanged between SPY and NDX.
+
+Proximity to a level is banded at **0.35%** of spot ("at") and **2%**
+("near"). These are labelling choices, not measurements — 0.35% is roughly a
+quiet index day's range — so the exact distance always prints beside the label
+and the reader can disagree with the word while keeping the number.
+
+With no open interest the reading is withheld entirely. Interpreting a surface
+of zeros would produce a fluent description of a market that was never
+measured.
+
+## 11. What this cannot do
 
 | Tier | Metrics | Blocker |
 |---|---|---|

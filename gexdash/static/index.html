@@ -76,7 +76,7 @@
   </div>
   <div class="field"><label for="btn-live">Stream</label><button id="btn-live">▶ start</button></div>
   <div class="field"><label for="btn-refresh">Chain</label><button id="btn-refresh">↻ refetch</button></div>
-  <div class="field"><label for="btn-table">View</label><button id="btn-table">▤ table</button></div>
+  <div class="field"><label for="btn-table">View</label><button id="btn-table" aria-pressed="false">▤ table</button></div>
 </div>
 
 <div id="degraded" class="notice warn" role="status" hidden></div>
@@ -249,7 +249,11 @@
 </main>
 
 <div class="card" id="tableview-card" hidden>
-  <h2>All strikes</h2>
+  <h2>
+    All strikes <span class="muted small" id="tableview-count"></span>
+    <span class="grow"></span>
+    <button id="btn-table-close" class="linkish">✕ close</button>
+  </h2>
   <div class="tableview" id="tableview"></div>
 </div>
 

@@ -1413,6 +1413,8 @@ function clearHover() {
 function renderTableView(d) {
   $("tableview-card").hidden = !state.showTable;
   if (!state.showTable) return;
+  $("tableview-count").textContent =
+    `${d.strikes.length} strikes · ${d.instrument} · ${d.diagnostics.expiry_window}`;
   const head = ["Strike", "GEX", "DEX", "VANX", "CEX", "Call OI", "Put OI", "Call vol", "Put vol"];
   const rows = d.strikes.map((k, i) =>
     `<tr><td>${priceFmt(k)}</td><td>${money(d.gex[i])}</td><td>${money(d.dex[i])}</td><td>${money(d.vanx[i])}</td>
@@ -1516,8 +1518,24 @@ $("zoom-reset").addEventListener("click", () => { state.zoom = null; renderPrice
 $("btn-table").addEventListener("click", () => {
   state.showTable = !state.showTable;
   $("btn-table").textContent = state.showTable ? "▤ hide" : "▤ table";
+  $("btn-table").setAttribute("aria-pressed", String(state.showTable));
   if (state.data) renderTableView(state.data);
+
+  // The table lives below both views, which on a full dashboard puts it well
+  // past the fold -- opening it changed nothing on screen and read as a dead
+  // button. Take the reader to what they just asked for.
+  if (state.showTable) {
+    $("tableview-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  } else {
+    // Closing collapses ~2000px out from under the viewport; without this the
+    // page is left scrolled into whatever now occupies that space.
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 });
+
+// The card opens far below the button that opened it, so it carries its own
+// way out rather than making the reader scroll back up to find one.
+$("btn-table-close").addEventListener("click", () => $("btn-table").click());
 
 $("btn-refresh").addEventListener("click", async () => {
   $("btn-refresh").disabled = true;

@@ -651,3 +651,10 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 .reading-chip .c-val .sign { margin-right: 3px; }
 .reading-chip .c-val .sign.pos { color: var(--pos); }
 .reading-chip .c-val .sign.neg { color: var(--neg); }
+
+/* Close control inside the strike table, which opens far below its button. */
+.linkish {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-secondary); font-size: 11px; padding: 3px 9px; cursor: pointer;
+}
+.linkish:hover { color: var(--text-primary); border-color: var(--text-muted); }

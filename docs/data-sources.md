@@ -43,21 +43,39 @@ Established by probing the live endpoint, not from documentation. The
 combinations matter because the wrong one is not an error — it returns a
 perfectly good chart covering the wrong span.
 
-| Bar size | Accepted `periodType` | Reach |
+**Bound requests with `startDate`/`endDate`, not `periodType`/`period`.**
+This is the single most important thing to know about the endpoint. The
+`period` form quantises to fixed buckets — `periodType=day` maxes out at 10 —
+so reading the limits off it produces "minute bars stop at 10 days", which is
+a property of the *parameter*, not of the feed. With explicit dates the same
+endpoint serves 30-minute bars over eight months.
+
+Once dates are supplied, `periodType` is only validated against
+`frequencyType` and no longer bounds the window: `year` is accepted alongside
+daily, weekly and monthly alike. Only `month` + `monthly` is rejected outright.
+
+| Bar size | Accepted `periodType` | Reach with explicit dates |
 |---|---|---|
-| minute (1, 5, 10, 15, 30 only) | `day` | **10 days** back |
+| 1 minute | `day` | **~48 days** — a hard cap of 12,870 candles |
+| 5 / 10 / 15 / 30 minute | `day` | **~260 days** |
 | daily | `month`, `year`, `ytd` | 10 years |
 | weekly | `month`, `year`, `ytd` | 20 years |
 | monthly | `year` **only** | 20 years |
 
-Three consequences the code has to carry:
+Measured against SPX, SPY, NDX and QQQ by requesting a 400-day window and
+reading back what arrived. The 1-minute figure is a **candle count**, not a
+date: all four symbols returned exactly 12,870 candles, which is 33 sessions ×
+390 RTH minutes. The coarser sizes all stopped on the same calendar date with
+counts from 13,746 down to 2,293, so theirs is a date horizon.
+
+Two further consequences the code carries:
 
 - **`frequency` 60 and 240 are rejected.** Hourly, 2-hour and 4-hour bars are
   aggregated locally from 30-minute bars, the largest native size.
-- **`periodType=day` serves minute frequencies only.** There is no short
-  period for daily bars, so a 5-day daily chart must request a month and trim.
-- **`periodType=month` with `frequencyType=monthly` returns 400**, which is
-  why monthly is the one bar size still mapped to whole-year periods.
+- **Candle volume depends on the extended-hours flag.** Intraday requests set
+  `needExtendedHoursData=true`, which roughly triples the count: a 10-day
+  1-minute request returns 2,730 candles RTH-only and 12,760 with extended
+  hours. Any estimate of response size has to account for it.
 
 There are **no sub-minute bars at any period**. One-second candles need a tick
 or streaming feed; the request is refused with that reason rather than

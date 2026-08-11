@@ -156,10 +156,11 @@ instead with the reason stated. With nothing to fall back on, the tiles read
 
 **A range that cannot be served exactly.** A year of 1-minute bars exists
 nowhere. Rather than quietly substituting, the request is adjusted and the
-adjustment is reported: the bar size coarsens and says so, over-fetches are
-trimmed back to the range and say so, and sub-minute intervals are refused
-outright with the reason. Combinations the feed cannot serve are greyed out in
-the selector rather than being accepted and silently changed.
+adjustment is reported: the bar size coarsens and says so, and sub-minute
+intervals are refused outright with the reason. Combinations that cannot be
+served are greyed out in the selector rather than accepted and silently
+changed. Requests are bounded by explicit dates, so the range asked for is the
+range served — nothing is rounded up to a period bucket.
 
 ---
 
@@ -220,6 +221,13 @@ Three details that are deliberate rather than incidental:
 - **Ten empty bar slots to the right of the last candle.** The current bar is
   the one you look at most, and pinning it against the axis leaves nowhere for
   its tag and no room to read where price is heading.
+- **Two separate limits decide which intervals a range offers.** How far back
+  the feed serves that bar size (~48 days for 1-minute, ~260 for 5-minute and
+  coarser), and how many candles are worth drawing. Both were measured, both
+  are in `/api/meta`, and the selector greys out anything that would trip
+  either — so a 6-month chart offers 15-minute bars and up, and asking for
+  1-minute over a month gets 5-minute bars with a note rather than a 2-second
+  render of 27,000 candles.
 - **The crosshair survives a refresh.** Re-rendering rebuilds the SVG, and a
   naive implementation drops the crosshair until the pointer next moves — so
   while streaming it blinks out every few seconds under a stationary cursor.

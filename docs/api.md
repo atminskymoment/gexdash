@@ -255,23 +255,39 @@ adjustment is reported in `plan.notes` — never applied quietly.
  // How the request was actually served.
  "plan": {"range": "3M", "interval_requested": "1D", "interval_served": "1D",
           "aggregated_from_minutes": null,
-          "provider_request": {"periodType": "month", "period": 3,
-                               "frequencyType": "daily", "frequency": 1},
+          "window": {"start": "2026-05-12T20:00:00+00:00",
+                     "end":   "2026-08-10T20:00:00+00:00"},
+          "provider_request": {"periodType": "year", "period": 1,
+                               "frequencyType": "daily", "frequency": 1,
+                               "startDate": 1778702400000,
+                               "endDate":   1786492800000},
           "notes": []}}
 ```
 
-`interval_served` differs from `interval_requested` when a bar size is not
-available over that span — a year of 1-minute bars exists nowhere, so the
-range is kept and the bar size coarsens, with the substitution stated in
-`notes`. Sub-minute intervals are refused outright with a `400` rather than
-rounded up to a minute.
+Requests are bounded by `startDate`/`endDate`, so **the range asked for is the
+range served** — there is no period bucket left to round up to, and nothing is
+over-fetched and trimmed. `window` is null only for short intraday ranges,
+which keep the `period` form: `periodType=day` counts *sessions*, so a `1D`
+chart still returns the last real session before Monday's open, where a clock
+window ending now would start after Friday's close and come back empty.
 
-Requests that must over-fetch are trimmed back to the range and say so: the
-feed's shortest daily period is one month, so `5D` + `1D` fetches a month and
-drops the oldest bars. The trim counts bars rather than filtering on a
-wall-clock cutoff, because the newest real bar can legitimately be older than
-the window — ask for `1D` before Monday's open and the last session is
-Friday's.
+`interval_served` differs from `interval_requested` when the bar size gives
+way, always with the reason in `notes`. Two independent limits cause that:
+
+| Limit | Cause | Example |
+|---|---|---|
+| **Reach** | how far back the feed serves that bar size — ~48 days for 1-minute, ~260 for 5-minute and coarser | `1Y` + `30m` → daily |
+| **Plot budget** | more candles than are worth drawing (15,000) | `1M` + `1m` → `5m` |
+
+Coarsening steps up the intraday ladder before falling to daily, so asking for
+1-minute bars over a month yields 5-minute bars rather than losing intraday
+entirely. `/api/meta` carries the same two limits (`intraday_reach_days`,
+`max_plotted_bars`) and the resulting per-range interval lists, so the selector
+offers exactly what will be served rather than accepting a choice and quietly
+changing it.
+
+Sub-minute intervals are refused outright with a `400` rather than rounded up
+to a minute.
 
 **This capability is optional**, and unavailability is a `200`, not an error:
 

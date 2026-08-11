@@ -16,12 +16,15 @@ import pytest
 from gexdash import instruments
 from gexdash.bars import build_bars
 from gexdash.history import (
+    INTERVALS,
+    MAX_PLOTTED_BARS,
+    estimated_bars,
+    INTRADAY_REACH_DAYS,
     MAX_INTRADAY_DAYS,
     NATIVE_MINUTES,
     RANGES,
     UNSUPPORTED_INTERVALS,
     aggregate,
-    apply_max_bars,
     capability_matrix,
     resolve,
     valid_intervals,
@@ -61,27 +64,61 @@ def test_intraday_beyond_the_minute_window_coarsens_and_says_so():
     assert plan.frequency_type == "daily"
     assert plan.served_interval_key == "1D"
     assert plan.interval_key == "5m", "the original request is still reported"
-    assert any(str(MAX_INTRADAY_DAYS) in n for n in plan.notes)
+    assert any("reach about" in n for n in plan.notes)
 
 
-def test_ten_days_is_the_intraday_boundary():
-    assert resolve("10D", "1m").frequency_type == "minute"
-    assert resolve("1M", "1m").frequency_type == "daily"
+def test_the_intraday_limit_is_per_bar_size_not_one_blanket_rule():
+    """Measured: 1-minute is capped at 12,870 candles (~48 days) while 5m and
+    coarser reach ~260 days. Treating them alike -- as a single 10-day rule
+    once did -- refuses 30-minute bars over three months that the feed serves
+    perfectly well.
+    """
+    assert "1m" in valid_intervals("10D"), "1-minute reaches well past 10 days"
+    assert "1m" not in valid_intervals("3M"), "but not three months"
+    assert resolve("3M", "1m").served_interval_key == "10m", (
+        "coarsened within intraday, not dropped to daily"
+    )
+    assert resolve("1M", "30m").frequency_type == "minute"
+    assert resolve("3M", "30m").frequency_type == "minute"
+    assert resolve("6M", "30m").frequency_type == "minute"
+    assert resolve("1Y", "30m").frequency_type == "daily", "a year is past even 30m"
 
 
-@pytest.mark.parametrize("rng,ptype,period", [
-    ("1M", "month", 1), ("6M", "month", 6), ("YTD", "ytd", 1),
-    ("1Y", "year", 1), ("2Y", "year", 2), ("10Y", "year", 10),
+def test_reach_is_ordered_so_a_coarser_bar_never_reaches_less_far():
+    reaches = [INTRADAY_REACH_DAYS[n] for n in sorted(INTRADAY_REACH_DAYS)]
+    assert reaches == sorted(reaches)
+
+
+@pytest.mark.parametrize("rng,days", [
+    ("1M", 30), ("6M", 180), ("1Y", 365), ("2Y", 730), ("10Y", 3650),
 ])
-def test_daily_period_selection(rng, ptype, period):
-    plan = resolve(rng, "1D")
-    assert (plan.period_type, plan.period) == (ptype, period)
+def test_non_intraday_requests_carry_an_exact_window(rng, days):
+    """The window is what bounds the request, so the range is served exactly.
+
+    The period ladder this replaced rounded up to the next bucket, which is
+    how "3M / Weekly" became a full year of candles.
+    """
+    now = datetime(2026, 8, 10, 20, 0, tzinfo=timezone.utc)
+    plan = resolve(rng, "1D", now=now)
+    assert plan.start is not None and plan.end == now
+    assert (plan.end - plan.start).days == days
 
 
-def test_weekly_and_monthly_use_year_periods():
-    assert resolve("10Y", "1W").frequency_type == "weekly"
-    assert resolve("10Y", "1W").period == 10
-    assert resolve("10Y", "1Mo").frequency_type == "monthly"
+def test_ytd_is_measured_from_january_not_as_a_fixed_365_days():
+    now = datetime(2026, 3, 1, 20, 0, tzinfo=timezone.utc)
+    plan = resolve("YTD", "1D", now=now)
+    assert (plan.end - plan.start).days == 59
+    assert plan.start.year == 2026 and plan.start.month == 1
+
+
+def test_one_period_type_serves_daily_weekly_and_monthly():
+    """Verified live: once dates are supplied periodType is only validated
+    against frequencyType, and `year` is accepted by all three."""
+    for interval, kind in [("1D", "daily"), ("1W", "weekly"), ("1Mo", "monthly")]:
+        plan = resolve("10Y", interval)
+        assert plan.frequency_type == kind
+        assert plan.period_type == "year", "month + monthly is rejected by the feed"
+        assert plan.start is not None
 
 
 def test_sub_minute_intervals_raise_with_the_reason():
@@ -220,52 +257,65 @@ def test_vwap_still_works_after_aggregation():
 # ----------------------------------------------------------------------
 
 
-def _implied_days(plan):
-    """Roughly how far back the provider request reaches."""
-    return {"day": 1, "month": 30, "year": 365, "ytd": 365}[plan.period_type] * plan.period
-
-
-@pytest.mark.parametrize("range_key,period_type,period", [
-    ("3M", "month", 3), ("6M", "month", 6), ("YTD", "ytd", 1),
-    ("1Y", "year", 1), ("2Y", "year", 2),
-])
-def test_weekly_bars_honour_the_requested_range(range_key, period_type, period):
+@pytest.mark.parametrize("range_key,days", [("3M", 90), ("6M", 180), ("1Y", 365), ("2Y", 730)])
+def test_weekly_bars_honour_the_requested_range(range_key, days):
     """Weekly used to be sent as a year period regardless of the range.
 
     "3M / Weekly" therefore drew a full year. Nothing announced it: the axis
     relabels and a year of weekly candles looks like a perfectly ordinary
-    chart. Verified live that the feed accepts month and ytd periods with
-    weekly frequency; only *monthly* is year-only.
+    chart. An explicit window removes the whole class of bug -- there is no
+    bucket left to round up to.
     """
-    plan = resolve(range_key, "1W")
-    assert (plan.period_type, plan.period) == (period_type, period)
+    now = datetime(2026, 8, 10, 20, 0, tzinfo=timezone.utc)
+    plan = resolve(range_key, "1W", now=now)
     assert plan.frequency_type == "weekly"
+    assert (plan.end - plan.start).days == days
 
 
-def test_no_offered_combination_reaches_far_past_its_range():
-    """A blanket guard against the whole class, not just the weekly case."""
+def test_no_offered_combination_reaches_past_its_range():
+    """The blanket guard against the whole class, not just the weekly case."""
+    now = datetime(2026, 8, 10, 20, 0, tzinfo=timezone.utc)
     for range_key in RANGES:
         days = RANGES[range_key].days
-        if days is None or days < 30:
-            continue          # sub-month ranges over-fetch by necessity, see below
         for interval in valid_intervals(range_key):
-            plan = resolve(range_key, interval)
-            if plan.max_bars:
-                continue      # trimmed after fetching instead
-            assert _implied_days(plan) <= days * 1.5, (
-                f"{range_key}/{interval} requests ~{_implied_days(plan)}d "
-                f"for a {days}d range"
+            plan = resolve(range_key, interval, now=now)
+            if plan.start is None:
+                # Session-counted intraday: bounded by `period`, which is
+                # never more than the 10-day ceiling.
+                assert plan.period_type == "day" and plan.period <= 10
+                continue
+            span = (plan.end - plan.start).days
+            assert days is None or span == days, (
+                f"{range_key}/{interval} requests {span}d for a {days}d range"
             )
 
 
-def test_short_daily_ranges_are_capped_because_no_shorter_period_exists():
-    """periodType=day serves minute frequencies only, verified live.
-
-    So a 5-day daily chart has to fetch a month and cut back.
+def test_short_intraday_ranges_still_count_sessions_rather_than_clock_time():
+    """`periodType=day` returns the last real *session*, so a 1D chart is not
+    empty before Monday's open. An explicit window ending now would start
+    after Friday's close and come back with nothing.
     """
-    assert resolve("5D", "1D").max_bars == 5
-    assert resolve("10D", "1D").max_bars == 10
-    assert resolve("1Y", "1D").max_bars is None, "no cap needed once the period fits"
+    for range_key in ("1D", "5D", "10D"):
+        plan = resolve(range_key, "5m")
+        assert plan.start is None, "short intraday must not use a clock window"
+        assert plan.period_type == "day"
+
+
+def test_long_intraday_uses_a_window_because_the_day_period_tops_out_at_ten():
+    now = datetime(2026, 8, 10, 20, 0, tzinfo=timezone.utc)
+    plan = resolve("6M", "30m", now=now)
+    assert plan.frequency_type == "minute" and plan.frequency == 30
+    assert (plan.end - plan.start).days == 180
+
+
+def test_the_request_carries_epoch_millisecond_dates():
+    now = datetime(2026, 8, 10, 20, 0, tzinfo=timezone.utc)
+    params = resolve("3M", "1D", now=now).request_params()
+    assert params["endDate"] == int(now.timestamp() * 1000)
+    assert params["startDate"] < params["endDate"]
+    # periodType still travels: the feed validates it against frequencyType
+    # even though it no longer bounds the window.
+    assert params["periodType"] == "year" and params["frequencyType"] == "daily"
 
 
 def test_a_daily_bar_over_one_day_is_not_offered():
@@ -276,30 +326,59 @@ def test_a_daily_bar_over_one_day_is_not_offered():
     assert "1D" in valid_intervals("1M")
 
 
-def test_apply_max_bars_keeps_the_most_recent_and_says_so():
-    src = _bars(40, minutes=1440)
-    plan = resolve("5D", "1D")
-    out = apply_max_bars(src, plan)
-
-    assert len(out) == 5
-    assert out.close[-1] == src.close[-1], "must keep the newest, not the oldest"
-    assert out.open[0] == src.open[-5]
-    assert any("dropped" in n for n in plan.notes), "a silent trim is the same bug"
+# ----------------------------------------------------------------------
+# The bar-count guard — a rendering limit, not a feed one
+# ----------------------------------------------------------------------
 
 
-def test_apply_max_bars_is_a_noop_when_the_series_already_fits():
-    src = _bars(3, minutes=1440)
-    plan = resolve("5D", "1D")
-    assert apply_max_bars(src, plan) is src
-    assert plan.notes == []
+def test_a_month_of_one_minute_bars_is_coarsened_rather_than_drawn():
+    """The feed serves it; the browser should not be asked to draw it.
 
-
-def test_apply_max_bars_counts_bars_rather_than_filtering_on_a_cutoff():
-    """A wall-clock cutoff blanks the chart when the last session predates it.
-
-    Ask for 1D before Monday's open and the newest real bar is Friday's.
-    Counting keeps whatever exists; a cutoff would return nothing.
+    Measured: 27,256 candles took 2.1s and 54,558 SVG nodes, re-run on every
+    30-second refresh, to show ~45 candles per pixel.
     """
-    stale = _bars(30, minutes=1440, start=datetime(2020, 1, 6, 14, 30, tzinfo=timezone.utc))
-    out = apply_max_bars(stale, resolve("5D", "1D"))
-    assert len(out) == 5, "old bars are still bars"
+    plan = resolve("1M", "1m")
+    assert plan.served_interval_key != "1m"
+    assert plan.frequency_type == "minute", "still intraday — only the size gave way"
+    assert any("candles" in n for n in plan.notes)
+
+
+def test_coarsening_steps_up_the_ladder_rather_than_collapsing_to_daily():
+    """Falling straight to daily would throw away perfectly good intraday
+    bars because a finer size than the budget allows was asked for."""
+    plan = resolve("1M", "1m")
+    assert plan.served_interval_key == "5m"
+    assert plan.frequency_type == "minute"
+
+    # And six months of 30-minute bars is inside the budget, so it is served
+    # as asked rather than coarsened at all.
+    assert resolve("6M", "30m").served_interval_key == "30m"
+
+
+def test_the_guard_falls_through_to_daily_when_no_intraday_size_reaches():
+    plan = resolve("1Y", "30m")
+    assert plan.served_interval_key == "1D"
+    assert any("reach about" in n for n in plan.notes)
+
+
+def test_every_offered_intraday_combination_stays_under_the_plot_budget():
+    """The selector must offer only what will actually be served, so a
+    coarsening note should never appear for something it offered."""
+    for range_key in RANGES:
+        days = RANGES[range_key].days or 222
+        for interval in valid_intervals(range_key):
+            iv = INTERVALS[interval]
+            if not iv.intraday:
+                continue
+            assert estimated_bars(days, iv.minutes) <= MAX_PLOTTED_BARS, (
+                f"{range_key}/{interval} is offered but would draw "
+                f"{estimated_bars(days, iv.minutes):,} candles"
+            )
+
+
+def test_the_new_reach_actually_widens_what_is_offered():
+    """Regression in the other direction: the old blanket 10-day rule refused
+    30-minute bars over three months that the feed serves fine."""
+    assert "30m" in valid_intervals("3M")
+    assert "1h" in valid_intervals("6M")
+    assert "1m" not in valid_intervals("3M"), "still past 1-minute's reach"

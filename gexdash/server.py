@@ -32,7 +32,7 @@ from .exposure import EXPIRY_WINDOWS, ExposureConfig
 from .providers import build_provider
 from .sessions import market_phase
 from .breadth import FAMILY_EXCHANGE, symbols_for_family
-from .history import apply_max_bars, capability_matrix, resolve as resolve_plan
+from .history import capability_matrix, resolve as resolve_plan
 from .providers.base import (
     BreadthProvider,
     BreadthUnavailable,
@@ -330,8 +330,6 @@ async def api_history(
 
     try:
         bars = await asyncio.to_thread(_fetch)
-        if plan is not None:
-            bars = apply_max_bars(bars, plan)
     except PriceHistoryUnavailable as exc:
         return {"available": False, "symbol": inst.key, "reason": str(exc),
                 "plan": plan.to_dict() if plan else None}

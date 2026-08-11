@@ -476,10 +476,7 @@ class SchwabProvider:
         if plan is not None:
             params = {
                 "symbol": instrument.quote_symbol,
-                "periodType": plan.period_type,
-                "period": plan.period,
-                "frequencyType": plan.frequency_type,
-                "frequency": plan.frequency,
+                **plan.request_params(),
                 "needExtendedHoursData": "true" if plan.frequency_type == "minute" else "false",
             }
             served_minutes = plan.frequency if plan.frequency_type == "minute" else 0

@@ -33,7 +33,7 @@ whole surface live without a live OI feed, which does not exist at any price.
 | `greeks.py` | Vectorized Black-Scholes. Black-76 via the exact `q = r` identity, so there is one code path. No scipy — `math.erf` vectorized is 0.14 ms for 2000 contracts. |
 | `breadth.py` | Exchange market internals from the `$ADVN`/`$DECN` symbol family, plus the counts-vs-net cross-check. |
 | `bars.py` | Intraday OHLCV + VWAP. Optional: a provider that cannot serve bars raises `PriceHistoryUnavailable` and the UI states the reason. |
-| `history.py` | Chart range/interval vocabulary and the mapping onto the provider's period types, plus aggregation and the over-fetch trim. Owns every compromise between what was asked for and what can be served, and records each one in `plan.notes`. |
+| `history.py` | Chart range/interval vocabulary and the mapping onto the provider's period types, plus aggregation and the two limits that decide which intervals a range can offer. Owns every compromise between what was asked for and what can be served, and records each one in `plan.notes`. |
 | `indicators.py` | RSI + MA(20), MACD, ADX/DI. Server-side so they can be tested — Wilder smoothing where Wilder specified it, conventional EMAs for MACD. |
 | `interpretation.py` | The written reading of the exposure surface. Server-side for the same reason: prose assembled in the browser is prose nobody checks, and an inverted comparison still reads fluently. |
 | `american.py` | CRR binomial, used **only** to bound the European-approximation error, and the two per-model disclosure notes. Not in the hot path. |
@@ -169,9 +169,16 @@ Bugs found during development, each invisible to the obvious test:
 6. **Weekly bars ignored the requested range.** Every weekly request was sent
    as a *year* period, so "3M / Weekly" drew a full year — 357 days of data
    under a label saying 90. Nothing announced it: the axis relabels and a year
-   of weekly candles looks like an ordinary chart. There is now a blanket test
-   that no offered combination requests materially more history than its range.
-7. **A chain with no open interest was cached over a good one.** Every
+   of weekly candles looks like an ordinary chart. Now that requests carry
+   explicit dates there is no bucket left to round up to, and a blanket test
+   asserts no offered combination reaches past its range.
+7. **The documented "minute bars stop at 10 days" limit was a property of the
+   parameter, not the feed.** It was measured off `periodType=day`, whose
+   period maxes out at 10. Bounding with `startDate`/`endDate` instead, the
+   same endpoint serves 30-minute bars over eight months. This is the failure
+   mode of probing an API through one calling convention and recording the
+   result as a fact about the service.
+8. **A chain with no open interest was cached over a good one.** Every
    exposure measure is proportional to OI, so the surface read `$0` — a
    confident number, not a gap. See
    [methodology §9](methodology.md#9-detecting-a-chain-that-is-not-there).
@@ -180,17 +187,17 @@ Bugs found during development, each invisible to the obvious test:
    snapshot when the refetch came back empty; and `load()` returns the newest
    snapshot day, so an already-written empty row shadowed the usable one
    behind it.
-8. **The interpretation text called a gamma flip below spot "above" it.**
+9. **The interpretation text called a gamma flip below spot "above" it.**
    `(level - spot)/spot` is negative when the level sits beneath, and the
    inverted sentence is perfectly grammatical — it just describes the opposite
    market. This is the argument for building prose server-side where it can be
    tested; every directional claim now has one.
-9. **A stale stylesheet rendered as a drawing bug.** A cached `styles.css`
+10. **A stale stylesheet rendered as a drawing bug.** A cached `styles.css`
    predating the crosshair rules left its tag at SVG's black default and its
    lines with no stroke at all, which reads as a rendering fault rather than a
    cache one. Front-end assets are now served `no-cache`: they change as a
    unit, and a partial update fails silently.
-10. **The crosshair vanished on every refresh.** Re-rendering replaces the SVG
+11. **The crosshair vanished on every refresh.** Re-rendering replaces the SVG
    *under the cursor*, so Chrome fires `pointerleave` on the detached node —
    and `hideCrosshair` is document-wide, so that stale event wiped the
    crosshair the new render had just restored.

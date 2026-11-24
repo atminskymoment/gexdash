@@ -73,6 +73,8 @@ BREADTH_SYMBOLS: dict[str, dict[str, str]] = {
 FAMILY_EXCHANGE: dict[str, str] = {
     "S&P 500": "NYSE",
     "Nasdaq-100": "NASDAQ",
+    # USO lists on NYSE Arca; NYSE breadth is the nearest internals series.
+    "Crude oil": "NYSE",
 }
 
 
@@ -108,6 +110,11 @@ class BreadthSnapshot:
 
     @property
     def total_issues(self) -> float | None:
+        """Advancing plus declining; None unless both resolved.
+
+        Unchanged issues are not fetched, so this falls short of the
+        exchange's full issue count.
+        """
         if self.advancing is None or self.declining is None:
             return None
         return self.advancing + self.declining
@@ -127,19 +134,22 @@ class BreadthSnapshot:
 
     @property
     def ad_ratio(self) -> float | None:
+        """Advancing / declining. None if either is missing or declining is zero."""
         if self.advancing is None or not self.declining:
             return None
         return self.advancing / self.declining
 
     @property
     def volume_ratio(self) -> float | None:
+        """Up volume / down volume. None if either is missing or down volume is zero."""
         if self.up_volume is None or not self.down_volume:
             return None
         return self.up_volume / self.down_volume
 
     @property
     def label(self) -> str:
-        """POSITIVE / NEGATIVE / NEUTRAL from the A/D ratio."""
+        """POSITIVE / NEGATIVE / NEUTRAL from the A/D ratio (at least 1.5, at most
+        1/1.5, or between), or UNKNOWN when there is no ratio to read."""
         r = self.ad_ratio
         if r is None:
             return "UNKNOWN"
@@ -150,6 +160,8 @@ class BreadthSnapshot:
         return "NEUTRAL"
 
     def to_dict(self) -> dict:
+        """JSON form, the core of ``/api/breadth``: raw readings, the derived
+        ratios and label, and a ``scope`` string saying whose issues these are."""
         return {
             "exchange": self.exchange,
             "asof": self.asof.isoformat(),

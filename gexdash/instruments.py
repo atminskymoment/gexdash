@@ -44,6 +44,15 @@ from dataclasses import dataclass, replace
 
 @dataclass(frozen=True)
 class Instrument:
+    """Specification of one underlying: every field that changes the
+    exposure numbers if it is wrong (see the module docstring).
+
+    ``key`` is the symbol the API and UI use; ``label`` is the display name.
+    Frozen: exercise overrides produce modified copies in :data:`REGISTRY`,
+    so look instruments up with :func:`get` rather than through the module
+    constants.
+    """
+
     key: str
     label: str
     multiplier: float
@@ -79,10 +88,12 @@ class Instrument:
 
     @property
     def is_future(self) -> bool:
+        """True for options on futures, priced with Black-76 on the futures price."""
         return self.model == "future"
 
     @property
     def exercise_style(self) -> str:
+        """``"european"`` or ``"american"``, as reported in the payload."""
         return "european" if self.european else "american"
 
     @property
@@ -209,6 +220,30 @@ NQ = Instrument(
 )
 
 
+# --------------------------------------------------------------- Crude oil
+
+#: Crude-oil ETF. Optionable, so it carries a full instrument spec rather than
+#: a chart-only symbol: every path that serves bars keys on ``Instrument``.
+#: EXERCISE: American, physically settled -- an equity-style ETF option.
+#: No distribution policy to speak of, so the dividend default is zero; the
+#: fund's roll yield is in the price, not a cash dividend.
+USO = Instrument(
+    key="USO",
+    label="United States Oil Fund",
+    multiplier=100.0,
+    model="index",
+    # $0.50 strikes near the money on a ~$75 handle; +/-15 of them spans
+    # about 20% of spot, the same order as the equity ETFs' grids.
+    strike_step=0.5,
+    quote_symbol="USO",
+    chain_symbol="USO",
+    display_strikes=15,
+    european=False,
+    default_dividend_yield=0.0,
+    plausible_spot=(5, 1000),
+)
+
+
 #: Environment variable holding exercise-style overrides.
 EXERCISE_OVERRIDE_ENV = "GEXDASH_EXERCISE_OVERRIDES"
 
@@ -262,7 +297,7 @@ def apply_exercise_overrides(
 
 
 REGISTRY: dict[str, Instrument] = apply_exercise_overrides(
-    {inst.key: inst for inst in (SPX, SPY, ES, NDX, QQQ, NQ)},
+    {inst.key: inst for inst in (SPX, SPY, ES, NDX, QQQ, NQ, USO)},
     os.environ.get(EXERCISE_OVERRIDE_ENV),
 )
 
@@ -270,10 +305,17 @@ REGISTRY: dict[str, Instrument] = apply_exercise_overrides(
 FAMILIES: dict[str, list[str]] = {
     "S&P 500": ["SPX", "SPY", "ES"],
     "Nasdaq-100": ["NDX", "QQQ", "NQ"],
+    "Crude oil": ["USO"],
 }
 
 
 def get(key: str) -> Instrument:
+    """The registered instrument for ``key``, case-insensitive.
+
+    This is the copy with ``GEXDASH_EXERCISE_OVERRIDES`` applied; the module
+    constants (``SPX``, ``ES`` ...) never carry overrides. An unknown key
+    raises KeyError listing the known ones.
+    """
     try:
         return REGISTRY[key.upper()]
     except KeyError:
@@ -281,4 +323,5 @@ def get(key: str) -> Instrument:
 
 
 def all_instruments() -> list[Instrument]:
+    """Every registered instrument, overrides applied, in registry order."""
     return list(REGISTRY.values())

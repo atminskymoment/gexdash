@@ -142,7 +142,7 @@ def test_spot_endpoint(client):
 
 def test_meta_endpoint(client):
     d = client.get("/api/meta").json()
-    assert {i["key"] for i in d["instruments"]} == {"SPX", "SPY", "ES", "NDX", "QQQ", "NQ"}
+    assert {i["key"] for i in d["instruments"]} == {"SPX", "SPY", "ES", "NDX", "QQQ", "NQ", "USO"}
     assert "spot_solve" in d["flip_methods"]
 
 
@@ -286,8 +286,8 @@ def test_history_unknown_symbol_404(client):
     assert client.get("/api/history?symbol=NOPE").status_code == 404
 
 
-def test_meta_lists_both_views(client):
-    assert set(client.get("/api/meta").json()["views"]) == {"columns", "terminal"}
+def test_meta_lists_every_view(client):
+    assert set(client.get("/api/meta").json()["views"]) == {"columns", "terminal", "chart"}
 
 
 def test_index_serves_both_views(client):

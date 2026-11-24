@@ -114,6 +114,8 @@ class SchwabAuth:
 
     @property
     def configured(self) -> bool:
+        """True when the app key and secret are both set. Says nothing about
+        whether a token exists -- see :meth:`status`."""
         return bool(self.app_key and self.app_secret)
 
     def _basic_header(self) -> str:
@@ -126,6 +128,12 @@ class SchwabAuth:
     REFRESH_TOKEN_LIFETIME_DAYS = 7
 
     def _save(self, token: dict, *, new_consent: bool = False) -> None:
+        """Write a token response to disk (mode 0600) and stamp both clocks.
+
+        ``expires_at`` is set 60 s before the access token really lapses, so
+        it is refreshed early rather than used at the edge. The refresh
+        token's clock restarts only on a new consent.
+        """
         token["expires_at"] = time.time() + float(token.get("expires_in", 1800)) - 60
 
         # The refresh token's clock starts at consent and is NOT reset by
@@ -191,6 +199,12 @@ class SchwabAuth:
         }
 
     def _load(self) -> dict | None:
+        """The token, or None if none is stored or the file is not valid JSON.
+
+        Once loaded it is held in memory and the file is not read again, so a
+        token written later by another process (a CLI ``login`` while the
+        server runs) is not seen by this instance.
+        """
         if self._token is not None:
             return self._token
         if not self.token_path.exists():
@@ -204,6 +218,12 @@ class SchwabAuth:
     # ------------------------------------------------------------------
 
     def authorize_url(self) -> str:
+        """The browser consent URL for this app.
+
+        Approving it redirects to ``callback_url`` with a single-use
+        ``?code=`` for :meth:`exchange_code`. The callback is inserted
+        verbatim, not percent-encoded.
+        """
         return f"{AUTH_URL}?client_id={self.app_key}&redirect_uri={self.callback_url}"
 
     def exchange_code(self, redirected_url: str) -> dict:
@@ -254,6 +274,12 @@ class SchwabAuth:
         return token
 
     def refresh(self) -> dict:
+        """Trade the stored refresh token for a new access token, and save it.
+
+        Raises :class:`NotAuthenticated` when no refresh token is stored or
+        Schwab refuses it -- almost always the 7-day expiry, which only a new
+        browser consent fixes. The refresh token's clock is carried forward.
+        """
         token = self._load()
         if not token or "refresh_token" not in token:
             raise NotAuthenticated("no refresh token on disk; run `python -m gexdash.providers.schwab login`")
@@ -284,6 +310,12 @@ class SchwabAuth:
         return new
 
     def access_token(self) -> str:
+        """A bearer token for the next request, refreshed first if lapsed.
+
+        Raises :class:`NotAuthenticated`, without a network call, when the
+        credentials are unset, no token is stored, or the refresh token's
+        7 days are already up.
+        """
         if not self.configured:
             raise NotAuthenticated(
                 "SCHWAB_APP_KEY / SCHWAB_APP_SECRET are not set. If they are in a .env, "
@@ -308,6 +340,15 @@ class SchwabAuth:
 
 
 class SchwabProvider:
+    """Chains, quotes, price history and breadth from the Schwab Trader API.
+
+    Credentials come from ``auth`` (by default read from the environment).
+    One ``httpx`` client per instance, so connections are reused. Spot and
+    price-history prices are checked against the instrument's
+    ``plausible_spot`` band before use, the guard against a root resolving
+    to a different security.
+    """
+
     name = "schwab"
 
     def __init__(self, auth: SchwabAuth | None = None, timeout: float = 30.0) -> None:
@@ -316,6 +357,11 @@ class SchwabProvider:
         self._warned_futures: set[str] = set()
 
     def _get(self, path: str, params: dict) -> dict:
+        """GET a market-data path with the bearer token, as parsed JSON.
+
+        A 401 refreshes the token and retries once; any other non-200 raises
+        :class:`ProviderError` with the start of the response body.
+        """
         resp = self._client.get(
             f"{BASE_URL}{path}",
             params=params,
@@ -335,6 +381,11 @@ class SchwabProvider:
     # ------------------------------------------------------------------
 
     def get_spot(self, instrument: Instrument) -> float:
+        """The quote's ``lastPrice``, else ``mark``, else ``closePrice``.
+
+        Raises :class:`ProviderError` when no quote or no usable price comes
+        back, or when the price falls outside the instrument's plausible band.
+        """
         data = self._get("/quotes", {"symbols": instrument.quote_symbol})
         node = data.get(instrument.quote_symbol)
         if not node:
@@ -348,6 +399,16 @@ class SchwabProvider:
         raise ProviderError(f"no usable price in quote for {instrument.quote_symbol}: {quote}")
 
     def get_chain(self, instrument: Instrument, *, max_dte: float | None = None) -> OptionChain:
+        """Every contract expiring from today (exchange date) to ``max_dte``
+        days out, or 400 days when None.
+
+        ``max_dte`` is applied by expiry date here; ``exposure.compute``
+        applies the exact window later. Oversized responses are split by date
+        and merged (:meth:`_fetch_chain_span`) rather than truncated by
+        strike. Spot is the chain's own underlying price, checked against the
+        plausible band, and OI is dated to the previous session. Futures
+        roots are attempted but unverified; a warning is logged once each.
+        """
         if instrument.is_future and instrument.key not in self._warned_futures:
             # Logged once per instrument per process, not printed per call.
             # A cache miss or a failed futures fetch (which CachedProvider
@@ -466,18 +527,21 @@ class SchwabProvider:
         drives the request; without one it falls back to the original
         minutes-and-hours form so existing callers keep working.
         """
-        if instrument.is_future:
-            raise PriceHistoryUnavailable(
-                f"price history for {instrument.chain_symbol} is unverified against Schwab -- "
-                "the chains endpoint documents equity and index symbols, and this is a "
-                "continuous-contract alias. Use a dated root or a CME-carrying provider."
-            )
-
+        # Futures roots (/ES, /NQ) are continuous-contract aliases that
+        # Schwab's documentation does not cover. They are *requested* rather
+        # than refused up front, and the response decides: a feed error or an
+        # empty series is reported with the feed's own reason, and a series
+        # whose last price is outside the instrument's plausible band is
+        # refused below -- that is the tripwire for a root resolving to a
+        # different security (bare ES is Eversource Energy). What passes is
+        # served with an explicit "unverified" note, never silently.
         if plan is not None:
             params = {
                 "symbol": instrument.quote_symbol,
                 **plan.request_params(),
-                "needExtendedHoursData": "true" if plan.frequency_type == "minute" else "false",
+                "needExtendedHoursData": (
+                    "true" if plan.frequency_type == "minute" and plan.extended_hours else "false"
+                ),
             }
             served_minutes = plan.frequency if plan.frequency_type == "minute" else 0
         else:
@@ -518,6 +582,23 @@ class SchwabProvider:
             meta={"provider": "schwab", "symbol": instrument.quote_symbol,
                   "provider_request": params},
         )
+
+        lo, hi = instrument.plausible_spot
+        if not (lo <= bars.last <= hi):
+            raise PriceHistoryUnavailable(
+                f"{instrument.quote_symbol} price history ends at {bars.last:,.2f}, outside the "
+                f"plausible band {lo:,.0f}-{hi:,.0f} for {instrument.label}; the symbol has "
+                "almost certainly resolved to a different security."
+            )
+        if instrument.is_future:
+            # Observed live (2026-11-23, /ES and /NQ): an unadjusted front-month
+            # series that rolls on the Monday of expiry week, leaving a step
+            # of roughly 0.5-1.5% (the calendar spread) at each roll. Whether
+            # that step is removed is the caller's choice (futures.back_adjust).
+            bars.meta["unverified"] = (
+                f"{instrument.quote_symbol} history is a continuous-contract alias Schwab does not "
+                "document; served because its last price passed the plausibility check."
+            )
 
         if plan is not None and plan.aggregate_minutes:
             from ..history import aggregate
@@ -592,6 +673,14 @@ class SchwabProvider:
 
     @staticmethod
     def _iter_contracts(exp_map: dict, right: str):
+        """Flatten one ``{expiry: {strike: [contract]}}`` map into
+        :func:`build_chain` rows.
+
+        IV arrives in percent and is converted to a decimal. A missing IV
+        becomes 0.0: the contract is kept, its OI and volume still count, but
+        it carries next to no gamma. Sentinels are cleaned, and a contract
+        with no expiration date is skipped.
+        """
         for _exp_key, strikes in exp_map.items():
             for _strike_key, contracts in strikes.items():
                 for c in contracts:
@@ -815,6 +904,8 @@ def _autologin_cli(argv: list[str]) -> int:
 
 
 def _status_cli() -> int:
+    """The ``status`` command: resolved settings, both token clocks, and one
+    live $SPX quote. Exits 1 if not authenticated or the live call fails."""
     from ..config import settings_report
 
     print("Settings")

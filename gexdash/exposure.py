@@ -99,6 +99,8 @@ class ExposureConfig:
         return instrument.default_dividend_yield
 
     def max_dte(self) -> float | None:
+        """Upper bound of ``expiry_window`` in calendar days; None means no
+        bound. An unknown window raises KeyError naming the known ones."""
         try:
             return EXPIRY_WINDOWS[self.expiry_window]
         except KeyError:
@@ -119,6 +121,17 @@ class Level:
     distance_pct: float | None = None
 
     def to_dict(self) -> dict:
+        """JSON form.
+
+        ``value`` is the figure that picked the strike: its GEX for the walls
+        and the max +/-GEX levels, its total option volume for the volume POC,
+        None for the flip and max pain. ``distance`` is ``strike - spot`` in
+        points and ``distance_pct`` the same as a percentage of spot, so
+        positive means above spot. For the gamma flip and max pain, which are
+        always listed, everything but ``name`` is None when the level does not
+        exist (e.g. no flip inside the search range); the other levels are
+        left out of ``levels`` altogether instead.
+        """
         return {
             "name": self.name,
             "strike": self.strike,
@@ -130,6 +143,15 @@ class Level:
 
 @dataclass
 class ExposureResult:
+    """Everything :func:`compute` produces for one chain.
+
+    ``strikes`` is ascending and unique, and every per-strike array is aligned
+    with it: net dealer exposure summed across the expiries in the window, in
+    the units tabled at the top of this module. ``call_*`` / ``put_*`` split
+    the same sums by side; volume and OI are in contracts. ``totals`` sums the
+    per-contract figures and adds the OI and volume put/call ratios.
+    """
+
     spot: float
     instrument: str
     contracts: int
@@ -157,6 +179,8 @@ class ExposureResult:
     regime: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
+        """JSON form: the core of the ``/api/exposure`` payload, to which the
+        server adds provenance, session and the written reading."""
         return {
             "spot": self.spot,
             "instrument": self.instrument,
@@ -182,6 +206,9 @@ class ExposureResult:
 
 
 def _dealer_weights(right: np.ndarray, convention: DealerSign) -> np.ndarray:
+    """Per-contract dealer position sign under ``convention``: +1 where
+    dealers are assumed long the contract, -1 where short. An unknown
+    convention raises ValueError."""
     if convention == "long_calls_short_puts":
         return np.where(right > 0, 1.0, -1.0)
     if convention == "short_calls_long_puts":
@@ -394,6 +421,8 @@ def compute(chain: OptionChain, cfg: ExposureConfig | None = None) -> ExposureRe
     n = len(strikes)
 
     def by_strike(values: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+        """Sum per-contract values into the ``strikes`` buckets; contracts
+        outside ``mask`` (e.g. puts, for a call-only split) count as zero."""
         v = values if mask is None else np.where(mask, values, 0.0)
         return np.bincount(inv, weights=v, minlength=n)
 
@@ -443,6 +472,8 @@ def compute(chain: OptionChain, cfg: ExposureConfig | None = None) -> ExposureRe
 
     # ---------------- levels ----------------
     def level(name: str, k: float | None, v: float | None) -> Level:
+        """A :class:`Level` at strike ``k`` with its signed distance from
+        spot, or an empty one when ``k`` is None."""
         if k is None:
             return Level(name, None)
         return Level(name, float(k), None if v is None else float(v), float(k - spot), float((k - spot) / spot * 100.0))

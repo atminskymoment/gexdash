@@ -22,7 +22,10 @@ from zoneinfo import ZoneInfo
 
 EXCHANGE_TZ = ZoneInfo("America/New_York")
 
-__all__ = ["EXCHANGE_TZ", "exchange_today", "previous_session", "market_phase"]
+__all__ = [
+    "EXCHANGE_TZ", "exchange_today", "previous_session", "market_phase",
+    "session_dates", "trim_sessions", "weekdays_back",
+]
 
 
 def exchange_today() -> date:
@@ -98,3 +101,53 @@ def previous_session(day: date | None = None) -> date:
     day = day or exchange_today()
     back = {0: 3, 6: 2}.get(day.weekday(), 1)  # Mon -> Fri, Sun -> Fri
     return day - timedelta(days=back)
+
+
+# --------------------------------------------------------------- bar sessions
+
+
+def session_dates(times, shift_hours: float) -> list[date]:
+    """The trading session each bar belongs to, in exchange time.
+
+    ``times`` are UTC ``datetime64`` bar opens. ``shift_hours`` moves a bar
+    into the session it belongs to: 6 for CME futures (the session opening
+    Sunday 18:00 ET is Monday's), 4 for ETFs with overnight bars (Sunday 20:00
+    is Monday's), 0 for regular hours.
+    """
+    import numpy as np
+
+    epoch = np.asarray(times).astype("datetime64[s]").astype("int64")
+    shift = timedelta(hours=shift_hours)
+    utc = ZoneInfo("UTC")
+    return [(datetime.fromtimestamp(int(t), tz=utc).astimezone(EXCHANGE_TZ) + shift).date()
+            for t in epoch]
+
+
+def trim_sessions(bars, sessions: int, shift_hours: float):
+    """The bars of the last ``sessions`` sessions present, oldest first.
+
+    Counted from the data rather than the calendar, so a holiday inside the
+    window costs nothing and a Monday before the open still shows a full
+    session -- the last one that traded.
+    """
+    from dataclasses import replace
+
+    if len(bars) == 0 or sessions <= 0:
+        return bars
+    dates = session_dates(bars.time, shift_hours)
+    keep = sorted(set(dates))[-sessions:]
+    first = next(i for i, d in enumerate(dates) if d >= keep[0])
+    if first == 0:
+        return bars
+    return replace(bars, time=bars.time[first:], open=bars.open[first:], high=bars.high[first:],
+                   low=bars.low[first:], close=bars.close[first:], volume=bars.volume[first:])
+
+
+def weekdays_back(day: date, count: int) -> date:
+    """The date ``count`` weekdays before ``day`` (weekends skipped, holidays
+    not modelled -- callers over-fetch and trim by the data instead)."""
+    while count > 0:
+        day -= timedelta(days=1)
+        if day.weekday() < 5:
+            count -= 1
+    return day

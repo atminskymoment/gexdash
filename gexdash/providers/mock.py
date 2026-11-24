@@ -35,16 +35,27 @@ DEFAULT_SPOT = {
     "NDX": 29811.55,
     "QQQ": 725.90,
     "NQ": 29855.25,
+    "USO": 74.60,
 }
 
 # Per-instrument ATM vol, so QQQ/NDX are not rendered with the S&P's vol level.
 DEFAULT_ATM_VOL = {
     "SPX": 0.115, "SPY": 0.118, "ES": 0.115,
     "NDX": 0.155, "QQQ": 0.158, "NQ": 0.155,
+    # Crude is roughly twice as volatile as the equity indices.
+    "USO": 0.34,
 }
 
 
 class MockProvider:
+    """Seeded synthetic chains, spot, price history and breadth; no credentials.
+
+    ``seed`` fixes the shape of the chain and the bar series, so they come
+    out the same on every run. ``spot`` replaces every instrument's anchor
+    price (otherwise :data:`DEFAULT_SPOT`): the chain and bars use it
+    exactly, while :meth:`get_spot` walks around it.
+    """
+
     name = "mock"
 
     def __init__(self, seed: int = 7, spot: float | None = None) -> None:
@@ -62,6 +73,12 @@ class MockProvider:
     # ------------------------------------------------------------------
 
     def get_spot(self, instrument: Instrument) -> float:
+        """The instrument's anchor price plus a random walk, rounded to cents.
+
+        One drift is shared by every instrument and moves on each call, so
+        consecutive ticks look live. It draws from the provider's single
+        generator, so the path depends on the seed and on every draw before it.
+        """
         base = self._spot_override or DEFAULT_SPOT.get(instrument.key, 100.0)
         # Proportional random walk, capped at +/-0.35%. An absolute step would
         # be 3% on a $776 ETF and invisible on a 29,800 index.
@@ -121,8 +138,15 @@ class MockProvider:
         if plan is not None:
             from ..history import INTERVALS, RANGES
             iv = INTERVALS[plan.served_interval_key or plan.interval_key]
-            rng_def = RANGES[plan.range_key]
-            days = rng_def.days if rng_def.days is not None else 365
+            if plan.start is not None and plan.end is not None:
+                # An explicit window is what the feed honours, so the mock
+                # does too -- otherwise a caller that over-fetches for
+                # indicator warm-up would get the display range back and
+                # never exercise the warm-up at all.
+                days = max((plan.end - plan.start).days, 1)
+            else:
+                rng_def = RANGES.get(plan.range_key)
+                days = rng_def.days if rng_def and rng_def.days is not None else 365
             if iv.intraday:
                 interval_minutes = iv.minutes
                 n = max(int(days * 390 / iv.minutes), 30)
@@ -159,7 +183,12 @@ class MockProvider:
         volume = shape * rng.uniform(0.6, 1.4, n) * 90_000
 
         now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-        times = [now - timedelta(minutes=interval_minutes * (n - 1 - i)) for i in range(n)]
+        if plan is not None and plan.frequency_type == "minute" and not plan.extended_hours:
+            # Regular hours only, as the feed serves them with
+            # needExtendedHoursData=false: weekday 9:30-16:00 ET bars.
+            times = _rth_times(now, n, interval_minutes)
+        else:
+            times = [now - timedelta(minutes=interval_minutes * (n - 1 - i)) for i in range(n)]
 
         return build_bars(
             instrument,
@@ -179,6 +208,15 @@ class MockProvider:
         )
 
     def get_chain(self, instrument: Instrument, *, max_dte: float | None = None) -> OptionChain:
+        """A synthetic chain around the instrument's anchor price.
+
+        ``display_strikes`` strikes each side of the money, on expiries from
+        the next 20:00 UTC settlement out to 60 days, cut at ``max_dte`` (at
+        least one is always kept). Re-seeded on every call, so the random
+        draws repeat (IV and OI still shift as time to expiry runs down), and
+        its spot is the fixed anchor rather than the walk from :meth:`get_spot`. A call wall one strike above the
+        money and a put wall one below are planted on the front expiry.
+        """
         rng = np.random.default_rng(self.seed)
         spot = self._spot_override or DEFAULT_SPOT.get(instrument.key, 100.0)
         now = datetime.now(timezone.utc)
@@ -271,6 +309,8 @@ class MockProvider:
 
     @staticmethod
     def _plant_wall(rows: list[dict], *, strike: float, right: str, expiry: datetime, oi: float) -> None:
+        """Set one contract's OI (and its volume to 42% of that) in place.
+        Does nothing if no row matches."""
         for row in rows:
             if row["strike"] == strike and row["right"] == right and row["expiry"] == expiry:
                 row["open_interest"] = oi
@@ -279,7 +319,25 @@ class MockProvider:
 
 
 def default_provider() -> MockProvider:
+    """A :class:`MockProvider` with the default seed."""
     return MockProvider()
 
 
 __all__ = ["MockProvider", "default_provider", "DEFAULT_SPOT", "SPX", "ES"]
+
+
+def _rth_times(now: datetime, n: int, minutes: int) -> list[datetime]:
+    """The last ``n`` bar-open times of US regular sessions up to ``now``,
+    oldest first: weekdays, 9:30 to 16:00 America/New_York."""
+    from zoneinfo import ZoneInfo
+
+    et = ZoneInfo("America/New_York")
+    out: list[datetime] = []
+    day = now.astimezone(et).date()
+    while len(out) < n:
+        if day.weekday() < 5:
+            open_ = datetime(day.year, day.month, day.day, 9, 30, tzinfo=et)
+            slots = [open_ + timedelta(minutes=minutes * k) for k in range(390 // minutes + (390 % minutes > 0))]
+            out.extend(t.astimezone(timezone.utc) for t in reversed(slots) if t <= now)
+        day -= timedelta(days=1)
+    return list(reversed(out[:n]))

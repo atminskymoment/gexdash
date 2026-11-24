@@ -41,12 +41,16 @@ PROXIMITY_NEAR = 2.0
 
 
 def _pct_from(spot: float, level: float | None) -> float | None:
+    """Distance to ``level`` as a percentage of spot; negative means the
+    level is below spot. None without a level or a spot."""
     if level is None or not spot:
         return None
     return (level - spot) / spot * 100.0
 
 
 def _proximity(distance_pct: float | None) -> str:
+    """Label a distance "at", "near" or "far" by :data:`PROXIMITY_AT` and
+    :data:`PROXIMITY_NEAR`; "unknown" when there is none."""
     if distance_pct is None:
         return "unknown"
     d = abs(distance_pct)

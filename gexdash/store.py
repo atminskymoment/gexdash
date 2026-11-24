@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -53,19 +54,44 @@ CREATE TABLE IF NOT EXISTS chain_snapshot (
 
 
 class ChainStore:
+    """SQLite store of chain snapshots and breadth samples.
+
+    Defaults to ``$GEXDASH_HOME/chains.db`` (``~/.gexdash``), created if
+    missing. One row per instrument per snapshot day: a later save on the
+    same day replaces the earlier one.
+
+    One connection, shared by the server's worker threads, so every use of it
+    holds ``_lock``. ``check_same_thread=False`` only switches off Python's
+    check; it does not make the connection safe to share. The SQLite build
+    Python ships on macOS allows one thread in a connection at a time
+    (``sqlite3.threadsafety == 1``), and two concurrent commits crashed the
+    whole server process inside SQLite. A fresh install hit it on first load,
+    when the page asks for exposure, bars and breadth at once.
+    """
+
     def __init__(self, path: Path | str | None = None) -> None:
         self.path = Path(path) if path else default_db_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        self._lock = threading.RLock()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+            self._conn.commit()
 
     def close(self) -> None:
-        self._conn.close()
+        """Close the database connection."""
+        with self._lock:
+            self._conn.close()
 
     # ------------------------------------------------------------------
 
     def save(self, chain: OptionChain, provider: str, day: date | None = None) -> None:
+        """Store a chain as the snapshot for ``day``, replacing any row for it.
+
+        ``day`` defaults to the date part of ``chain.asof``, which providers
+        set in UTC -- so it is the UTC date of the fetch, not the exchange
+        session date.
+        """
         day = day or chain.asof.date()
         payload = json.dumps(
             {
@@ -80,21 +106,22 @@ class ChainStore:
                 "meta": chain.meta,
             }
         )
-        self._conn.execute(
-            "INSERT OR REPLACE INTO chain_snapshot "
-            "(instrument, snapshot_day, fetched_at, spot, oi_asof, provider, payload) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (
-                chain.instrument.key,
-                day.isoformat(),
-                chain.asof.isoformat(),
-                chain.spot,
-                chain.oi_asof.isoformat() if chain.oi_asof else None,
-                provider,
-                payload,
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO chain_snapshot "
+                "(instrument, snapshot_day, fetched_at, spot, oi_asof, provider, payload) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    chain.instrument.key,
+                    day.isoformat(),
+                    chain.asof.isoformat(),
+                    chain.spot,
+                    chain.oi_asof.isoformat() if chain.oi_asof else None,
+                    provider,
+                    payload,
+                ),
+            )
+            self._conn.commit()
 
     def load_usable(self, instrument: Instrument | str, *, max_lookback: int = 10) -> OptionChain | None:
         """The most recent snapshot that actually carries open interest.
@@ -105,11 +132,12 @@ class ChainStore:
         fine. Walks back day by day instead.
         """
         key = instrument if isinstance(instrument, str) else instrument.key
-        days = self._conn.execute(
-            "SELECT snapshot_day FROM chain_snapshot WHERE instrument = ? "
-            "ORDER BY snapshot_day DESC LIMIT ?",
-            (key, max_lookback),
-        ).fetchall()
+        with self._lock:
+            days = self._conn.execute(
+                "SELECT snapshot_day FROM chain_snapshot WHERE instrument = ? "
+                "ORDER BY snapshot_day DESC LIMIT ?",
+                (key, max_lookback),
+            ).fetchall()
         for (day_str,) in days:
             chain = self.load(key, date.fromisoformat(day_str))
             if chain is not None and _has_open_interest(chain):
@@ -117,19 +145,26 @@ class ChainStore:
         return None
 
     def load(self, instrument: Instrument | str, day: date | None = None) -> OptionChain | None:
+        """The snapshot for ``day``, or the newest one when ``day`` is None.
+
+        None if there is no such row. Returned whether or not it carries open
+        interest -- see :meth:`load_usable` for a fallback. The instrument is
+        looked up in the registry, so current exercise overrides apply.
+        """
         key = instrument if isinstance(instrument, str) else instrument.key
-        if day is None:
-            row = self._conn.execute(
-                "SELECT instrument, fetched_at, spot, oi_asof, payload FROM chain_snapshot "
-                "WHERE instrument = ? ORDER BY snapshot_day DESC LIMIT 1",
-                (key,),
-            ).fetchone()
-        else:
-            row = self._conn.execute(
-                "SELECT instrument, fetched_at, spot, oi_asof, payload FROM chain_snapshot "
-                "WHERE instrument = ? AND snapshot_day = ?",
-                (key, day.isoformat()),
-            ).fetchone()
+        with self._lock:
+            if day is None:
+                row = self._conn.execute(
+                    "SELECT instrument, fetched_at, spot, oi_asof, payload FROM chain_snapshot "
+                    "WHERE instrument = ? ORDER BY snapshot_day DESC LIMIT 1",
+                    (key,),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT instrument, fetched_at, spot, oi_asof, payload FROM chain_snapshot "
+                    "WHERE instrument = ? AND snapshot_day = ?",
+                    (key, day.isoformat()),
+                ).fetchone()
         if not row:
             return None
 
@@ -170,36 +205,42 @@ class ChainStore:
     # ------------------------------------------------------------------
 
     def save_breadth(self, exchange: str, advancing, declining, net, when: datetime | None = None) -> None:
+        """Record one A/D sample, keyed to the minute of ``when`` (default now,
+        UTC). Any value may be None."""
         when = when or datetime.now(timezone.utc)
         # Bucketed to the minute: at a 60s server TTL this is one row per
         # minute per exchange, and re-fetches inside a bucket overwrite
         # rather than accumulating duplicates.
         bucket = when.replace(second=0, microsecond=0).isoformat()
-        self._conn.execute(
-            "INSERT OR REPLACE INTO breadth_sample (exchange, sampled_at, advancing, declining, net) "
-            "VALUES (?,?,?,?,?)",
-            (exchange, bucket, advancing, declining, net),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO breadth_sample (exchange, sampled_at, advancing, declining, net) "
+                "VALUES (?,?,?,?,?)",
+                (exchange, bucket, advancing, declining, net),
+            )
+            self._conn.commit()
 
     def breadth_history(self, exchange: str, limit: int = 240) -> list[dict]:
         """Most recent samples, oldest first."""
-        rows = self._conn.execute(
-            "SELECT sampled_at, advancing, declining, net FROM breadth_sample "
-            "WHERE exchange = ? ORDER BY sampled_at DESC LIMIT ?",
-            (exchange, limit),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT sampled_at, advancing, declining, net FROM breadth_sample "
+                "WHERE exchange = ? ORDER BY sampled_at DESC LIMIT ?",
+                (exchange, limit),
+            ).fetchall()
         return [
             {"t": r[0], "advancing": r[1], "declining": r[2], "net": r[3]}
             for r in reversed(rows)
         ]
 
     def snapshot_days(self, instrument: Instrument | str) -> list[date]:
+        """Days with a stored snapshot for ``instrument``, newest first."""
         key = instrument if isinstance(instrument, str) else instrument.key
-        rows = self._conn.execute(
-            "SELECT snapshot_day FROM chain_snapshot WHERE instrument = ? ORDER BY snapshot_day DESC",
-            (key,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT snapshot_day FROM chain_snapshot WHERE instrument = ? ORDER BY snapshot_day DESC",
+                (key,),
+            ).fetchall()
         return [date.fromisoformat(r[0]) for r in rows]
 
 
@@ -286,10 +327,12 @@ class CachedProvider:
         )
 
     def get_spot(self, instrument: Instrument) -> float:
+        """Straight through to the provider; spot is never cached."""
         return self.provider.get_spot(instrument)
 
     @staticmethod
     def _age_hours(chain: OptionChain) -> float:
+        """Hours since the chain was fetched. A naive ``asof`` is taken as UTC."""
         asof = chain.asof
         if asof.tzinfo is None:
             asof = asof.replace(tzinfo=timezone.utc)
@@ -311,6 +354,8 @@ class CachedProvider:
             return None
 
     def _as_degraded(self, chain: OptionChain, reason: str) -> OptionChain:
+        """Mark a fallback chain stale, with the reason the UI shows. Mutates
+        ``chain.meta`` in place and returns the same chain."""
         chain.meta.update(
             from_cache=True, stale=True,
             cache_age_hours=round(self._age_hours(chain), 2),
@@ -319,6 +364,26 @@ class CachedProvider:
         return chain
 
     def get_chain(self, instrument: Instrument, *, max_dte: float | None = None, force: bool = False) -> OptionChain:
+        """The newest stored snapshot if it is fresh, else a new fetch, else a labelled fallback.
+
+        In order:
+
+        * A stored snapshot no older than ``max_age_hours`` and carrying open
+          interest is returned as is (``from_cache``).
+        * Inside the back-off after an empty-OI fetch, the provider is not
+          asked again; the last usable snapshot is served instead.
+        * Otherwise the provider is asked. A good chain is saved and returned.
+          A failed fetch, or one without open interest, serves the last
+          usable snapshot marked ``stale`` with a ``degraded_reason``; an
+          empty-OI chain is never saved and starts the back-off.
+
+        It raises only when the fetch fails and no usable snapshot exists.
+        With no usable snapshot, an empty-OI chain is returned itself, with
+        ``oi_unavailable`` set. ``force`` skips the freshness check and the
+        back-off, but still falls back rather than discard a good snapshot.
+        ``max_dte`` reaches the provider only on a fetch: a cached snapshot
+        is returned whatever window it was fetched with.
+        """
         cached = None if force else self.store.load(instrument)
         # A snapshot saved before this condition was detected can itself be
         # all zeros. Treat it as no cache at all, or it is served as good

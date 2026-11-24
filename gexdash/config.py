@@ -21,9 +21,9 @@ from pathlib import Path
 
 __all__ = ["load_dotenv", "find_dotenv", "settings_report", "restore_sudo_ownership"]
 
-#: Keys this project understands. Anything else in a .env is passed through,
-#: but an unrecognised key that *looks* like one of these is flagged -- a
-#: typo'd variable name is otherwise indistinguishable from an unset one.
+#: Keys this project understands, and the rows settings_report() shows (on the
+#: /connect page) with where each value came from. Anything else in a .env is
+#: passed through unchecked, so a misspelt key reads as unset.
 KNOWN_KEYS = {
     "SCHWAB_APP_KEY",
     "SCHWAB_APP_SECRET",

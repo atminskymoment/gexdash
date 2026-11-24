@@ -10,9 +10,10 @@ than from documentation:
 
 ===============  =========================================================
 minute bars      frequency 1, 5, 10, 15, 30 only. 60 and 240 are rejected.
-1-minute         ~48 days back -- a hard cap of 12,870 candles, which is
-                 33 sessions x 390 RTH minutes, identical on every symbol
-5m and coarser   ~260 days back, a date horizon rather than a candle cap
+1-minute         ~48 days back. A 400-day window came back as 12,870
+                 candles on every symbol, but that is not a per-request
+                 cap: a 30-day window returned 29,112, ending at now
+5m and coarser   ~260 days back, a date horizon
 daily            10 years        weekly/monthly  20 years
 one-second       **not offered at all** -- the floor is one minute
 ===============  =========================================================
@@ -26,8 +27,10 @@ endpoint serves 30-minute bars over six months. Once dates are supplied
 ``periodType`` is only a validation token: ``year`` is accepted alongside
 daily, weekly and monthly alike, and only ``month`` + ``monthly`` is rejected.
 
-Bounding by date also means every range is served exactly, so nothing has to
-be over-fetched and trimmed afterwards.
+Bounding by date also means a range is served exactly. The one exception is
+the session-counted intraday ranges (1D/5D/10D): their window spans two extra
+weekdays, because a weekday need not be a session, and the server trims the
+result to the last N sessions present.
 
 Hourly, 2-hour and 4-hour bars are still built here by aggregating 30-minute
 bars, and anything below a minute is impossible without a tick feed. Both
@@ -37,11 +40,12 @@ facts are reported rather than worked around silently.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 
 from .bars import PriceBars, build_bars
+from .sessions import EXCHANGE_TZ, weekdays_back
 
 __all__ = [
     "RANGES", "INTERVALS", "Plan", "resolve", "aggregate", "valid_intervals",
@@ -51,6 +55,13 @@ __all__ = [
 
 @dataclass(frozen=True)
 class Range:
+    """A chart range, as the price panel and ``/api/history`` name it.
+
+    ``days`` is calendar days, or None for year-to-date, which is resolved
+    against the clock. On intraday bars a range of 10 days or fewer counts
+    sessions instead (see :func:`resolve`). ``order`` is the selector position.
+    """
+
     key: str
     label: str
     days: int | None          # None = year-to-date
@@ -59,6 +70,13 @@ class Range:
 
 @dataclass(frozen=True)
 class Interval:
+    """A bar size, as the price panel and ``/api/history`` name it.
+
+    Sizes not in :data:`NATIVE_MINUTES` (1h, 2h, 4h) are aggregated from the
+    largest native size that divides them. ``order`` is the selector position.
+    The Chart view has its own vocabulary, ``technicals.TechInterval``.
+    """
+
     key: str
     label: str
     #: Bar size in minutes; None for daily/weekly/monthly.
@@ -69,6 +87,7 @@ class Interval:
 
     @property
     def intraday(self) -> bool:
+        """True for minute-based sizes, the aggregated hourly ones included."""
         return self.kind == "minute"
 
 
@@ -112,11 +131,12 @@ NATIVE_MINUTES = (1, 5, 10, 15, 30)
 #:     1m   12,870 candles on every symbol -> 48 days
 #:     5m   260 days      10m  260 days     15m  260 days     30m  260 days
 #:
-#: 1-minute is limited by a *candle count* (12,870 = 33 sessions x 390 RTH
-#: minutes, identical to the contract across all four symbols), so its reach
-#: in days drifts with how many sessions fall in the window. The coarser sizes
-#: all stopped on the same calendar date with wildly different candle counts
-#: (13,746 vs 2,293), which makes theirs a date horizon.
+#: A 400-day 1-minute request came back as exactly 12,870 candles on all four
+#: symbols, which looked like a candle cap -- but a 30-day window later
+#: returned 29,112 candles ending at the current minute, so it is a reach
+#: limit for windows that start too early, not a per-request cap. The
+#: coarser sizes all stopped on the same calendar date with wildly different
+#: candle counts (13,746 vs 2,293), which makes theirs a date horizon.
 #:
 #: Held a little short of the measurements so a range sitting on the boundary
 #: does not quietly come back truncated.
@@ -199,6 +219,13 @@ class Plan:
     #: Non-fatal adjustments, surfaced to the user.
     notes: list[str] = field(default_factory=list)
     served_interval_key: str = ""
+    #: Session-counted ranges (1D/5D/10D): keep the last this-many sessions
+    #: present once the bars arrive. The window over-fetches by two weekdays.
+    sessions: int | None = None
+    #: Minute bars only: include pre-/post-market (``needExtendedHoursData``).
+    #: The terminal chart always wants them; the Chart view asks for regular
+    #: hours on ETFs, which is TradingView's default session.
+    extended_hours: bool = True
 
     def request_params(self) -> dict:
         """Query parameters for /pricehistory, dates included where set."""
@@ -217,6 +244,14 @@ class Plan:
         return params
 
     def to_dict(self) -> dict:
+        """JSON form, echoed to the client as ``plan``.
+
+        ``interval_served`` differs from ``interval_requested`` when the bar
+        size was coarsened, with the reason in ``notes``.
+        ``aggregated_from_minutes`` is the native size the bars were built
+        from, or None when served natively. ``window`` is the explicit
+        start/end as UTC ISO strings, or None if the plan has none.
+        """
         return {
             "range": self.range_key,
             "interval_requested": self.interval_key,
@@ -226,6 +261,7 @@ class Plan:
                 "start": self.start.isoformat(), "end": self.end.isoformat(),
             },
             "provider_request": self.request_params(),
+            "sessions": self.sessions,
             "notes": self.notes,
         }
 
@@ -263,16 +299,7 @@ def valid_intervals(range_key: str, *, now: datetime | None = None) -> list[str]
     return out
 
 
-def _period_for(days: int, allowed: tuple[int, ...]) -> int:
-    for value in allowed:
-        if value >= days:
-            return value
-    return allowed[-1]
-
-
-#: Longest intraday range still expressed with `periodType=day` + `period`.
-#: The day period tops out at 10, and inside that it is preferable to an
-#: explicit window because it counts sessions rather than clock time.
+#: Longest intraday range counted in sessions rather than clock time.
 _MAX_SESSION_PERIOD_DAYS = 10
 
 
@@ -363,15 +390,24 @@ def resolve(range_key: str, interval_key: str, *, now: datetime | None = None) -
                 "the feed's largest native size is 30m."
             )
 
-        # Short intraday ranges keep the period form. `periodType=day` counts
-        # *sessions*, so it still returns the last real session when the
-        # market has not opened yet -- an explicit window ending now would
-        # start after Friday's close and come back empty on a Monday morning.
+        # Short intraday ranges count sessions. The period form looked like
+        # the way to do that, but without an endDate the feed ends it at the
+        # previous session's close: on a Monday afternoon, 1D was Friday.
+        # So the request is an explicit window over the last N + 2 weekdays,
+        # ending now -- room for a holiday and for a day that has not traded
+        # yet -- and the server keeps the last N sessions present in the
+        # bars. Before Monday's open that is still Friday's session.
         if days <= _MAX_SESSION_PERIOD_DAYS:
+            today = now.astimezone(EXCHANGE_TZ).date()
+            first = weekdays_back(today, days + 1)
+            # From 18:00 the evening before: a futures session opens then.
+            start_at = (datetime(first.year, first.month, first.day, tzinfo=EXCHANGE_TZ)
+                        - timedelta(hours=6)).astimezone(timezone.utc)
             return Plan(
                 range_key=range_key, interval_key=interval_key,
-                period_type="day", period=_period_for(days, (1, 2, 3, 4, 5, 10)),
+                period_type="day", period=10,
                 frequency_type="minute", frequency=native,
+                start=start_at, end=now, sessions=days,
                 aggregate_minutes=aggregate, notes=notes, served_interval_key=iv.key,
             )
 

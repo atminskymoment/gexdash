@@ -52,6 +52,33 @@
      the documented relief for a contrast warning. */
   --series-gold: #eda100;
 
+  /* Technical chart (Chart view). The four averages and EMA 9 are slots 3,
+     2, 7 and 4 of the validated categorical theme, plus the neutral text ink
+     for SMMA 20 -- run through the palette validator in both modes: worst
+     adjacent CVD dE 9.2 light / 9.4 dark, normal-vision >= 19.3. Light-mode
+     aqua and yellow sit below 3:1 on the surface; the relief is that every
+     average carries its value in the legend and on the axis tag. Bands and
+     VAMS levels reuse the diverging poles: above is blue, below is red. */
+  --ma-20: var(--text-primary);
+  --ma-50: #1baf7a;
+  --ma-100: #eb6834;
+  --ma-200: #6250d6;
+  --ema-9: #eda100;
+  --bb-up: var(--pos);
+  --bb-low: var(--neg);
+  /* Signal markers always carry a text label; colour is the second cue. */
+  --sig-buy: var(--pos);
+  --sig-sell: #e87ba4;
+  --sig-breakout: #008300;
+  --sig-breakdown: var(--text-primary);
+  /* Supertrend: the script's green/red. Direction is also carried by the
+     band's side of price and by the Buy/Sell text, never by hue alone. The
+     *-box steps hold white label text at >= 4.4:1. */
+  --st-up: #1b7d39;
+  --st-dn: #d1322b;
+  --st-up-box: #1b7d39;
+  --st-dn-box: #c42f28;
+
   /* status — reserved, never used as a series */
   --good: #0ca30c;
   --warning: #fab219;
@@ -85,6 +112,14 @@
     --mid: #383835;
     --series-violet: #9085e9;
     --series-gold: #c98500;
+    --ma-50: #199e70;
+    --ma-100: #d95926;
+    --ma-200: #9085e9;
+    --ema-9: #c98500;
+    --sig-sell: #d55181;
+    --sig-breakout: #0ca30c;
+    --st-up: #2fae54;
+    --st-dn: #e5524b;
   }
 }
 
@@ -105,6 +140,14 @@
   --pos: #3987e5;
   --neg: #e66767;
   --mid: #383835;
+  --ma-50: #199e70;
+  --ma-100: #d95926;
+  --ma-200: #9085e9;
+  --ema-9: #c98500;
+  --sig-sell: #d55181;
+  --sig-breakout: #0ca30c;
+  --st-up: #2fae54;
+  --st-dn: #e5524b;
 }
 
 * { box-sizing: border-box; }
@@ -146,6 +189,22 @@ header.top {
 .clock .k { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
 .clock .v { font-size: 14px; font-weight: 620; font-variant-numeric: tabular-nums; }
 .clock .et { font-size: 9px; color: var(--text-muted); }
+/* The zone tag doubles as the picker: a native select laid over it, so the
+   keyboard, screen readers and the OS menu all work, and the header stays
+   one tag wide however long the zone names are. */
+.tz-pick {
+  position: relative; display: inline-flex; align-items: baseline; gap: 2px;
+  margin-left: 2px; padding: 0 3px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
+}
+.tz-pick .et { font-weight: 560; }
+.tz-pick .caret { font-size: 9px; color: var(--text-muted); }
+.tz-pick:hover { background: var(--mid); }
+.tz-pick:hover .et { color: var(--text-secondary); }
+.tz-pick:has(select:focus-visible) { outline: 2px solid var(--series-call); outline-offset: 1px; }
+.tz-pick select {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; cursor: pointer; font-size: 12px;
+}
 .muted { color: var(--text-muted); font-weight: 400; }
 
 .phase { text-transform: uppercase; font-size: 12px; letter-spacing: 0.05em; }
@@ -658,3 +717,123 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
   color: var(--text-secondary); font-size: 11px; padding: 3px 9px; cursor: pointer;
 }
 .linkish:hover { color: var(--text-primary); border-color: var(--text-muted); }
+
+/* ---- Chart view: technical chart -------------------------------------- */
+
+.techview { display: grid; gap: var(--gap); padding: var(--gap); }
+
+/* The chart view does not read the exposure payload, so the chrome that
+   scopes it -- expiry filters, strike strip, degraded-chain notice, the
+   strike table and the provenance card -- would be controls that do nothing. */
+body[data-view="chart"] .exposure-only,
+body[data-view="chart"] .ticker-field { display: none !important; }
+
+.tech-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.tech-symbols button { min-width: 44px; font-weight: 620; }
+#tech-layers button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--series-call) 15%, transparent);
+  color: var(--series-call); font-weight: 650;
+}
+#tech-note { min-height: 14px; }
+
+.tech-wrap { position: relative; margin-top: 4px; }
+#tech-chart { transition: opacity 0.15s; }
+#tech-chart.stale { opacity: 0.55; }
+#tech-chart svg { display: block; width: 100%; cursor: crosshair; touch-action: none; user-select: none; }
+#tech-chart .nodata { min-height: 360px; }
+
+.tech-legend {
+  /* The chart reserves a strip for this above the plot, so it may run wide:
+     it stops short of the right-axis tags and covers no data. */
+  position: absolute; left: 10px; top: 8px; pointer-events: none;
+  max-width: calc(100% - 100px);
+  padding: 3px 7px; border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-1) 80%, transparent);
+  font-size: 11px; line-height: 1.55; font-variant-numeric: tabular-nums;
+}
+.tl-row { display: flex; flex-wrap: wrap; gap: 0 10px; align-items: baseline; }
+.tl-head { gap: 0 8px; }
+.tl-sym { font-weight: 720; font-size: 12px; }
+.tl-when { color: var(--text-secondary); font-weight: 600; }
+.tl-item { white-space: nowrap; color: var(--text-muted); }
+.tl-item b { color: var(--text-primary); font-weight: 620; }
+.tl-chg { font-weight: 650; }
+.tl-chg.up { color: var(--pos); }
+.tl-chg.dn { color: var(--neg); }
+.tech-legend .r-dot {
+  width: 8px; height: 8px; border-radius: 2px; display: inline-block;
+  margin-right: 4px; vertical-align: baseline;
+}
+
+.ma-line { fill: none; stroke-width: 1.4; }
+.lvl-line { stroke-width: 1; shape-rendering: crispEdges; }
+.lvl-line.dotted { stroke-dasharray: 1 3; }
+.lvl-line.dashed { stroke-dasharray: 6 4; }
+.tag-leader { stroke-width: 1; }
+
+.range-box { fill: var(--text-primary); fill-opacity: 0.025; stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.range-box.current { stroke: var(--text-secondary); fill-opacity: 0.04; }
+
+.vp-up { fill: var(--pos); opacity: 0.26; }
+.vp-dn { fill: var(--neg); opacity: 0.26; }
+.vol-up { fill: var(--pos); opacity: 0.6; }
+.vol-dn { fill: var(--neg); opacity: 0.6; }
+.h-pos { fill: var(--pos); opacity: 0.85; }
+.h-neg { fill: var(--neg); opacity: 0.85; }
+.h-pos.weak, .h-neg.weak { opacity: 0.38; }
+
+.vams-bull { fill: var(--pos); }
+.vams-bear { fill: var(--neg); }
+.vams-neutral { fill: var(--text-muted); opacity: 0.5; }
+
+/* Axis tags: a tint of the series with text in text ink, so the number stays
+   legible on the light-mode yellows and aquas. The last price is solid. */
+.ttag rect { fill: color-mix(in srgb, var(--c) 24%, var(--surface-1)); stroke: var(--c); stroke-width: 1; }
+.ttag text { fill: var(--text-primary); font-size: 10.5px; font-weight: 620; font-variant-numeric: tabular-nums; }
+.ttag.solid rect { fill: var(--c); }
+.ttag.solid text { fill: #fff; font-weight: 700; }
+.tname rect { fill: color-mix(in srgb, var(--text-primary) 12%, var(--surface-1)); }
+.tname text { fill: var(--text-secondary); font-size: 10px; font-weight: 600; }
+
+/* Markers get a surface ring so they separate from the candles beneath. */
+.sig path { stroke: var(--surface-1); stroke-width: 1.5; paint-order: stroke fill; }
+.sig text {
+  font-size: 10px; font-weight: 700; fill: var(--text-primary);
+  paint-order: stroke fill; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round;
+}
+.sig { cursor: help; }
+.st-line { fill: none; stroke-width: 2; }
+.st-fill { fill-opacity: 0.1; stroke: none; }
+.st-sig { cursor: help; }
+.st-sig text { font-size: 9.5px; font-weight: 700; fill: #fff; }
+.st-sig circle { stroke: var(--surface-1); stroke-width: 1; }
+.sig-leader { stroke-width: 1; stroke-dasharray: 1 2; }
+/* Intraday: bars are spaced by index, so a session break needs a mark. */
+.session-line { stroke: var(--text-muted); stroke-opacity: 0.45; stroke-width: 1; stroke-dasharray: 2 4; }
+.tech-session { min-height: 24px; padding: 2px 9px; font-size: 10.5px; }
+.tech-session[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--series-call) 15%, transparent);
+  color: var(--series-call); font-weight: 650;
+}
+.tech-session:disabled { cursor: default; opacity: 0.75; }
+.roll-mark { cursor: help; }
+.roll-mark line { stroke: var(--text-secondary); stroke-width: 1.5; }
+.roll-mark text { font-size: 9px; font-weight: 650; fill: var(--text-secondary); }
+
+.pane-title { font-size: 10.5px; fill: var(--text-muted); font-weight: 600; }
+.pane-title .v { fill: var(--text-primary); }
+.pane-title .muted-t { fill: var(--text-muted); font-weight: 500; }
+.axis-label.date { font-size: 10px; }
+.axis-label.year { font-weight: 700; fill: var(--text-secondary); }
+
+.txhair line { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.txhair rect { fill: var(--text-primary); }
+.txhair text { fill: var(--surface-1); font-size: 10.5px; font-weight: 620; font-variant-numeric: tabular-nums; }
+
+.tech-rules-box { margin-top: 10px; }
+.tech-rules { margin: 6px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 11.5px; }
+.tech-rules dt { font-weight: 680; }
+.tech-rules dd { margin: 0; color: var(--text-secondary); }
+@media (max-width: 700px) {
+  .tech-rules { grid-template-columns: 1fr; }
+}

@@ -38,6 +38,9 @@ def gexdash_home() -> Path:
 
 
 class CertPaths:
+    """Where the listener's self-signed certificate and key are cached:
+    ``home`` if given, else ``$GEXDASH_HOME`` (default ``~/.gexdash``)."""
+
     def __init__(self, home: Path | None = None) -> None:
         base = Path(home) if home else gexdash_home()
         self.cert = base / "loopback-cert.pem"
@@ -51,6 +54,12 @@ def port_for(callback_url: str) -> int:
 
 
 def can_bind(port: int, host: str = "127.0.0.1") -> tuple[bool, str]:
+    """``(True, "")`` if ``host:port`` can be bound now, else ``(False, why)``.
+
+    Checked before starting the listener so a privileged port produces advice
+    (sudo, or a high-port callback) rather than a traceback. The socket is
+    closed at once: this is a probe, not a reservation.
+    """
     sock = socket.socket()
     try:
         sock.bind((host, port))
@@ -150,9 +159,14 @@ def capture_code(
     done = threading.Event()
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        """Waits for the one request that carries the grant. Anything else
+        (favicon, prefetch) gets an empty 204 and the wait goes on."""
+
         protocol_version = "HTTP/1.1"
 
         def do_GET(self):  # noqa: N802
+            """Record the code or the refusal, run ``on_code`` on a code, show
+            the outcome in the browser tab, and end the wait."""
             query = parse_qs(urlparse(self.path).query)
 
             # Browsers ask for /favicon.ico and similar; only the request
@@ -187,6 +201,7 @@ def capture_code(
             done.set()
 
         def log_message(self, *_args):        # keep the console clean
+            """Silenced: the base class logs every request to stderr."""
             pass
 
     httpd = http.server.HTTPServer(("127.0.0.1", port), Handler)

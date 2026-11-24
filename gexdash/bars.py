@@ -56,6 +56,7 @@ class PriceBars:
 
     @property
     def last(self) -> float:
+        """Close of the final bar."""
         return float(self.close[-1])
 
     def vwap(self) -> np.ndarray:
@@ -74,9 +75,21 @@ class PriceBars:
         return np.where(cum_vol > 0, cum_pv / np.maximum(cum_vol, 1e-9), typical)
 
     def session_range(self) -> tuple[float, float]:
+        """``(lowest low, highest high)`` across every bar in the series.
+
+        Named for the single-session panel it was written for; like
+        :meth:`vwap` it spans whatever the series covers, which on a 5D range
+        is five sessions.
+        """
         return float(self.low.min()), float(self.high.max())
 
     def to_dict(self) -> dict:
+        """JSON form, the body of ``/api/history``.
+
+        ``time`` holds bar-open times in UTC as ISO strings with no offset.
+        ``vwap`` and ``session_low`` / ``session_high`` are computed here,
+        over the whole series.
+        """
         return {
             "instrument": self.instrument.key,
             "interval_minutes": self.interval_minutes,
@@ -103,6 +116,11 @@ def build_bars(
     """Assemble bars from provider row dicts (``time``/``open``/…/``volume``)."""
 
     def to_time(v) -> np.datetime64:
+        """A provider timestamp as ``datetime64[s]`` in UTC.
+
+        Numbers are epoch *milliseconds*. A timezone-aware datetime has its
+        zone dropped, not converted, so it must already be in UTC.
+        """
         if isinstance(v, np.datetime64):
             return v.astype("datetime64[s]")
         if isinstance(v, datetime):

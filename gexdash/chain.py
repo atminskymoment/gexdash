@@ -82,10 +82,12 @@ class OptionChain:
 
     @property
     def is_call(self) -> np.ndarray:
+        """Boolean mask of the calls."""
         return self.right > 0
 
     @property
     def is_put(self) -> np.ndarray:
+        """Boolean mask of the puts."""
         return self.right < 0
 
     def expiries(self) -> np.ndarray:
@@ -119,7 +121,14 @@ class OptionChain:
         return self.subset(mask)
 
     def subset(self, mask: np.ndarray) -> "OptionChain":
+        """A new chain holding only the contracts where ``mask`` is True.
+
+        Spot, ``asof`` and ``oi_asof`` carry over. Unlike :meth:`with_spot`
+        the arrays are copies, and ``meta`` is shallow-copied, so flags set on
+        the subset do not leak back into this chain.
+        """
         def take(arr):
+            """Mask an optional provider-greek array; None stays None."""
             return None if arr is None else arr[mask]
 
         return OptionChain(
@@ -175,6 +184,12 @@ def build_chain(
     asof = asof or datetime.now(timezone.utc)
 
     def to_expiry(v) -> np.datetime64:
+        """A row's expiry as ``datetime64[s]``, naive UTC.
+
+        A bare ``date`` gets :data:`SETTLEMENT_HOUR_UTC` (20:00 UTC: 16:00 ET
+        in summer, 15:00 ET in winter). A timezone-aware datetime has its zone
+        dropped, not converted, so it must already be in UTC.
+        """
         if isinstance(v, np.datetime64):
             return v.astype("datetime64[s]")
         if isinstance(v, datetime):
@@ -186,6 +201,8 @@ def build_chain(
         return np.datetime64(str(v), "s")
 
     def to_right(v) -> int:
+        """CALL / PUT from a string (starts with "C" means call, anything else
+        put) or a signed number (positive means call)."""
         if isinstance(v, str):
             return CALL if v.upper().startswith("C") else PUT
         return CALL if float(v) > 0 else PUT

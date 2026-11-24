@@ -279,10 +279,11 @@ def test_no_offered_combination_reaches_past_its_range():
         days = RANGES[range_key].days
         for interval in valid_intervals(range_key):
             plan = resolve(range_key, interval, now=now)
-            if plan.start is None:
-                # Session-counted intraday: bounded by `period`, which is
-                # never more than the 10-day ceiling.
-                assert plan.period_type == "day" and plan.period <= 10
+            if plan.sessions:
+                # Session-counted intraday: N + 2 weekdays plus the evening
+                # before, never more than the 10-session ceiling allows.
+                assert plan.sessions == days and plan.end == now
+                assert (plan.end - plan.start).days <= days + 2 + 2 * ((days + 2) // 5 + 1) + 1
                 continue
             span = (plan.end - plan.start).days
             assert days is None or span == days, (
@@ -290,15 +291,50 @@ def test_no_offered_combination_reaches_past_its_range():
             )
 
 
-def test_short_intraday_ranges_still_count_sessions_rather_than_clock_time():
-    """`periodType=day` returns the last real *session*, so a 1D chart is not
-    empty before Monday's open. An explicit window ending now would start
-    after Friday's close and come back with nothing.
-    """
-    for range_key in ("1D", "5D", "10D"):
-        plan = resolve(range_key, "5m")
-        assert plan.start is None, "short intraday must not use a clock window"
-        assert plan.period_type == "day"
+def test_short_intraday_ranges_count_sessions_in_a_window_that_ends_now():
+    """The period form without dates ended at the previous session's close,
+    so on Monday 2026-11-23 at 13:40 ET a 1D chart showed Friday. The window
+    now ends at the current minute and reaches back N + 2 weekdays; the
+    server keeps the last N sessions present in the bars."""
+    monday = datetime(2026, 11, 23, 18, 40, tzinfo=timezone.utc)      # 13:40 ET
+    for range_key, n in (("1D", 1), ("5D", 5), ("10D", 10)):
+        plan = resolve(range_key, "5m", now=monday)
+        assert plan.end == monday and plan.sessions == n
+        assert plan.request_params()["endDate"] == int(monday.timestamp() * 1000)
+    one = resolve("1D", "5m", now=monday)
+    # Thursday 00:00 ET less six hours: Wednesday 18:00 ET, when Thursday's
+    # futures session opens. Friday and today are both inside.
+    assert one.start == datetime(2026, 11, 18, 23, 0, tzinfo=timezone.utc)
+
+
+def _session_bars(stamps_et):
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    rows = [{"time": datetime(*t, tzinfo=et).astimezone(timezone.utc), "open": 1.0, "high": 1.0,
+             "low": 1.0, "close": 1.0, "volume": 1.0} for t in stamps_et]
+    return build_bars(instruments.get("SPX"), rows, interval_minutes=5)
+
+
+def test_trim_keeps_the_last_sessions_present_and_friday_before_mondays_open():
+    from gexdash.sessions import trim_sessions
+
+    stamps = [(2026, 11, d, h, 0) for d in (18, 19, 20) for h in (10, 12, 15)]
+    bars = _session_bars(stamps)
+    # Monday 05:00 ET: no Monday bars yet, so 1D is Friday's session.
+    one = trim_sessions(bars, 1, 4)
+    assert [str(t)[:10] for t in one.time] == ["2026-11-20"] * 3
+    two = trim_sessions(bars, 2, 4)
+    assert len(two) == 6 and str(two.time[0])[:10] == "2026-11-19"
+    # Once Monday trades, 1D is Monday.
+    later = _session_bars(stamps + [(2026, 11, 23, 9, 30), (2026, 11, 23, 13, 40)])
+    assert [str(t)[:10] for t in trim_sessions(later, 1, 4).time] == ["2026-11-23"] * 2
+
+
+def test_futures_sunday_evening_belongs_to_mondays_session():
+    from gexdash.sessions import trim_sessions
+
+    bars = _session_bars([(2026, 11, 20, 16, 0), (2026, 11, 22, 18, 0), (2026, 11, 23, 9, 0)])
+    assert len(trim_sessions(bars, 1, 6)) == 2         # Sunday 18:00 and Monday 09:00
 
 
 def test_long_intraday_uses_a_window_because_the_day_period_tops_out_at_ten():

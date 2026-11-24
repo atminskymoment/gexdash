@@ -5,6 +5,18 @@
  *               tabbed exposure-by-strike, order flow & bias.
  *   columns   — panel-centric: market bias / spot+levels / zone / signal chart.
  *
+ * A third view, "chart" (the technical chart), is drawn by technicals.js from
+ * its own endpoint; this file mounts it and tells it when to redraw. The
+ * scripts load as tz.js, technicals.js, app.js and share one global scope;
+ * every on-screen clock time goes through tz.js.
+ *
+ * Data: /api/meta once at startup; /api/exposure, or the /api/stream SSE feed
+ * while live, for the exposure payload both layouts draw; /api/history for
+ * the Terminal's candles and indicators; /api/breadth for its market
+ * internals; POST /api/refresh to refetch the chain. Startup is at the bottom
+ * of this file: initTechnicals(), setView(), then loadMeta() and the first
+ * fetches.
+ *
  * Charts are hand-rolled SVG: no chart library, no CDN, no build step. Both
  * views share the primitives in the CHART PRIMITIVES section below — the
  * horizontal exposure panel is a coordinate swap of the vertical one, not a
@@ -25,6 +37,17 @@
 
 const $ = (id) => document.getElementById(id);
 
+/** Remembered preferences. Storage can be blocked (private windows, strict
+ *  privacy settings) and then throws; a preference is a convenience, so a
+ *  blocked read is "nothing saved" and a blocked write is skipped. */
+function storeGet(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+/** See storeGet. */
+function storeSet(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* blocked: not remembered */ }
+}
+
 const state = {
   data: null,
   bars: null,
@@ -44,10 +67,16 @@ const state = {
   xhair: null,
   // Bar the readout is showing; null means the most recent.
   readoutIndex: null,
+  // Server clock minus browser clock, ms; null until the first payload.
+  clockSkew: null,
+  // Terminal price-chart drag in progress: {x, lo, hi} at pointerdown; null otherwise.
+  pan: null,
 };
 
 /* ----------------------------------------------------------- formatting */
 
+/** Dollar amounts with a T/B/M/K suffix ("-$1.25B"), for the exposure
+ *  measures, which are dollars. "—" when there is no value. */
 function money(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   const a = Math.abs(v), sign = v < 0 ? "-" : "";
@@ -58,6 +87,8 @@ function money(v) {
   return `${sign}$${a.toFixed(0)}`;
 }
 
+/** Contract counts (volume, open interest) with a K/M suffix and no
+ *  currency sign. "—" when there is no value. */
 function count(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   const a = Math.abs(v);
@@ -66,7 +97,11 @@ function count(v) {
   return v.toFixed(0);
 }
 
+/** A number to `d` decimals, for ratios such as put/call; "—" when missing. */
 const px = (v, d = 2) => (v === null || v === undefined ? "—" : v.toFixed(d));
+/** To `d` decimals with an explicit "+" when positive, for distances from
+ *  spot and changes. Negatives keep toFixed's hyphen-minus; techSigned()
+ *  in technicals.js uses a true minus sign. */
 const signed = (v, d = 2) => (v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}`);
 
 /* Decimals only when the value has them. Listed strikes are whole numbers and
@@ -81,6 +116,7 @@ function priceFmt(v) {
 const issues = (v) =>
   v === null || v === undefined ? "—" : Math.round(v).toLocaleString("en-US");
 
+/** HTML-escape text bound for innerHTML or a double-quoted attribute. */
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
 /* ═══════════════════════ CHART PRIMITIVES (shared) ═══════════════════════ */
@@ -90,12 +126,16 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
  * chart reads as flat. */
 const NICE_STEPS = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
 
+/** The smallest NICE_STEPS value, times a power of ten, that is at least
+ *  `v`: the bound of an exposure axis. 1 for zero, negatives and NaN. */
 function niceCeil(v) {
   if (!(v > 0)) return 1;
   const exp = Math.pow(10, Math.floor(Math.log10(v)));
   return (NICE_STEPS.find((s) => v / exp <= s + 1e-9) ?? 10) * exp;
 }
 
+/** Bound and three ticks for an exposure axis: -m, 0, m when the measure is
+ *  signed (bars grow both ways from a centred zero); 0, m/2, m when not. */
 function axisTicks(maxAbs, isSigned) {
   const m = niceCeil(maxAbs);
   return isSigned ? { bound: m, ticks: [-m, 0, m] } : { bound: m, ticks: [0, m / 2, m] };
@@ -136,6 +176,10 @@ const METRICS = {
   oi: { label: "OI", title: "Open interest", fmt: count, kind: "grouped", a: "call_oi", b: "put_oi" },
 };
 
+/** One metric's values at the visible strikes (`idx` indexes the payload's
+ *  per-strike arrays). Grouped metrics give calls as `a` and puts as `b`;
+ *  signed ones give `v`. `maxAbs` is at least 1, so an all-zero chain still
+ *  has a scale. */
 function seriesFor(d, spec, idx) {
   if (spec.kind === "grouped") {
     const a = idx.map((i) => d[spec.a][i]), b = idx.map((i) => d[spec.b][i]);
@@ -145,6 +189,7 @@ function seriesFor(d, spec, idx) {
   return { grouped: false, v, maxAbs: Math.max(...v.map(Math.abs), 1) };
 }
 
+/** Legend swatches: calls/puts for grouped counts, +/− for signed exposure. */
 const legendFor = (spec) =>
   spec.kind === "grouped"
     ? `<span class="item"><span class="swatch" style="background:var(--series-call)"></span>calls</span>
@@ -154,6 +199,8 @@ const legendFor = (spec) =>
 
 /* ---------------------------------------------------------------- fetch */
 
+/** Query string for /api/exposure and /api/stream, from the filter bar.
+ *  SPX until /api/meta has filled the symbol picker. */
 function params() {
   return new URLSearchParams({
     symbol: $("f-symbol").value || "SPX",
@@ -163,6 +210,11 @@ function params() {
   });
 }
 
+/** Fetch /api/meta once at startup: fill the symbol picker grouped by
+ *  family and select ?symbol= when it names a known instrument (SPX
+ *  otherwise). The payload stays on state.meta: the Terminal chart's
+ *  range/interval matrix (`chart`) and the Chart view's first caps
+ *  (`technicals`) come from it. */
 async function loadMeta() {
   const meta = await (await fetch("/api/meta")).json();
   state.meta = meta;
@@ -179,6 +231,11 @@ async function loadMeta() {
   sel.value = meta.instruments.some((i) => i.key === wanted) ? wanted : "SPX";
 }
 
+/** One exposure fetch (/api/exposure) with the current filters, drawn by
+ *  render(). Used at startup, after Refresh, and for filter changes while
+ *  the stream is paused; while streaming, each SSE message goes through
+ *  render() instead. The mounted view is greyed (.stale) while it runs, and
+ *  on failure the last good render stays on screen under an error notice. */
 async function load() {
   const host = activeMain();
   host.classList.add("stale");
@@ -195,7 +252,13 @@ async function load() {
   }
 }
 
+/** Exchange internals (/api/breadth) for the selected symbol: the server
+ *  picks NYSE or NASDAQ from its family and caches for 60s. Never throws; a
+ *  network failure is stored as unavailable. Drawn only when the Terminal
+ *  view is mounted, where the internals panel lives; otherwise it is kept
+ *  for setView() to draw. */
 async function loadBreadth() {
+  if (!$("f-symbol").value) return;          // before /api/meta: startup asks again
   try {
     const res = await fetch(`/api/breadth?symbol=${$("f-symbol").value}`);
     state.breadth = await res.json();
@@ -205,7 +268,14 @@ async function loadBreadth() {
   if (state.view === "terminal") renderInternals();
 }
 
+/** OHLC bars plus RSI/MACD/ADX (/api/history) for the Terminal price chart,
+ *  at its own range and interval. Separate from the exposure payload because
+ *  bars move far more slowly. Resets the zoom on every call, the 30s refresh
+ *  while streaming included. A network failure is stored as unavailable, and
+ *  anything without `available: true` draws as "Price history unavailable".
+ *  Drawn only when the Terminal view is mounted. */
 async function loadBars() {
+  if (!$("f-symbol").value) return;          // before /api/meta: startup asks again
   const q = new URLSearchParams({
     symbol: $("f-symbol").value, range: state.range, interval: state.interval, indicators: "true",
   });
@@ -238,23 +308,48 @@ function notice(msg, isError, allowHtml) {
 
 /* --------------------------------------------------------------- render */
 
-const activeMain = () => (state.view === "terminal" ? $("view-terminal") : $("view-columns"));
+const VIEWS = ["terminal", "columns", "chart"];
+/** The mounted view's container: #view-terminal, #view-columns or #view-chart. */
+const activeMain = () => $(`view-${state.view}`);
 
+/**
+ * Entry point for every exposure payload: load(), each SSE message (every 2s
+ * while streaming), and the re-render after a view switch, theme change or
+ * resize. Stores the payload, updates the shared header and strip, then
+ * draws only the mounted view. The table (when open) and diagnostics sit
+ * outside the views and are redrawn on every call.
+ */
 function render(d) {
   state.data = d;
   renderHeader(d);
   renderStrip(d);
-  // Only the mounted view is rendered: the other one's containers report
+  // Only the mounted view is rendered: the others' containers report
   // clientWidth 0 while hidden, which would produce degenerate geometry.
+  // Explicit branches -- the chart view does not draw the exposure payload,
+  // and a bare `else` would render the hidden columns view on every tick.
   if (state.view === "terminal") renderTerminal(d);
-  else renderColumns(d);
+  else if (state.view === "columns") renderColumns(d);
   renderTableView(d);
   renderDiagnostics(d);
 }
 
+/** Header: market phase and countdown, provider and synthetic-data badges,
+ *  and a Schwab connect/reconnect notice when the token needs one. Also
+ *  re-syncs the clock to the server's. */
 function renderHeader(d) {
   const s = d.session || {};
-  $("clock-time").textContent = s.exchange_time || "—";
+  // The server's clock, not the browser's: the phase beside it is computed
+  // there. `exchange_time` is a bare New York "HH:MM:SS" and cannot be moved
+  // to another zone, so the clock runs from `server_time` (UTC) instead.
+  // Measured once per payload, as it arrives: a view switch, resize or theme
+  // change re-renders the same payload later, and measuring then would set
+  // the clock back by the payload's age.
+  if (d._clockSkew === undefined) {
+    const at = Date.parse(d.server_time);
+    d._clockSkew = Number.isFinite(at) ? at - Date.now() : null;
+  }
+  if (d._clockSkew !== null) state.clockSkew = d._clockSkew;
+  renderClock();
   const phase = $("clock-phase");
   phase.textContent = s.phase || "—";
   phase.className = `phase ${s.phase || ""}`;
@@ -278,6 +373,19 @@ function renderHeader(d) {
   syn.textContent = "synthetic — not market data";
 }
 
+/** Header clock in the chosen zone. Ticks each second between payloads. */
+function renderClock() {
+  $("clock-label").textContent = tzIsExchange() ? "Market time" : "Time";
+  $("clock-tz").textContent = tzTag();
+  if (state.clockSkew == null) return;
+  $("clock-time").textContent = tzHMS(new Date(Date.now() + state.clockSkew));
+}
+setInterval(renderClock, 1000);
+
+/** The strip under the header: strike range and count, contracts, exercise
+ *  style and multiplier (or the instrument's warning note), and the OI date,
+ *  flagged when the chain is stale. Also raises or clears the degraded
+ *  banner. */
 function renderStrip(d) {
   const lo = Math.min(...d.strikes), hi = Math.max(...d.strikes);
   const im = d.instrument_meta || {};
@@ -383,6 +491,10 @@ const KPIS = [
   ["cex", "Net charm", "dδ/dt"],
 ];
 
+/** Terminal view from one exposure payload: KPI strip, written reading,
+ *  exposure-by-strike tabs, order flow & bias. The price chart and internals
+ *  are redrawn too, but from state.bars and state.breadth, which load on
+ *  their own cadence -- they show whatever was last fetched. */
 function renderTerminal(d) {
   // KPI strip
   const flip = d.levels.gamma_flip?.strike;
@@ -461,6 +573,26 @@ function visibleWindow(n) {
   return [lo, hi];
 }
 
+/** A Terminal bar's time. Daily and longer bars are dated by their session,
+ *  so they keep the date as sent; intraday bars are UTC instants and read in
+ *  the chosen zone, with the date and zone tag when `full`. */
+function barWhen(stamp, daily, full) {
+  if (daily) return String(stamp).slice(0, 10);
+  const t = tzInstant(stamp);
+  return full ? `${tzYMD(t)} ${tzHM(t)} ${tzTag(t)}` : tzHM(t);
+}
+
+/**
+ * Terminal price chart: candles from state.bars in the zoom window, with the
+ * exposure levels from state.data (walls, flip, max pain and the rest) on the
+ * price axis, and optionally VWAP. No arguments, so zoom, pan, the checkboxes
+ * and loadBars() can all call it. Rebuilds the whole SVG every time -- each
+ * pan step, wheel notch and stream tick -- and keeps the geometry the
+ * crosshair needs on state.chart. Needs an exposure payload for the levels
+ * and returns early without one. Width comes from #price-chart, so the
+ * Terminal view must be mounted: a hidden container reports 0 and the chart
+ * falls back to 700px.
+ */
 function renderPriceChart() {
   const host = $("price-chart");
   const d = state.data, bars = state.bars;
@@ -612,8 +744,7 @@ function renderPriceChart() {
   const every = Math.max(1, Math.floor(n / Math.max(4, Math.floor(W / 100))));
   const daily = ["1D", "1W", "1Mo"].includes(state.bars?.plan?.interval_served);
   for (let i = 0; i < n; i += every) {
-    const t = String(vTime[i]);
-    parts.push(`<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="middle">${daily ? t.slice(0, 10) : t.slice(11, 16)}</text>`);
+    parts.push(`<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="middle">${barWhen(vTime[i], daily, false)}</text>`);
   }
 
   parts.push(`<rect class="hit" x="${padL}" y="${padT}" width="${innerW}" height="${innerH}"/>`);
@@ -653,6 +784,10 @@ function renderPriceChart() {
 
 /* ------------------------------- crosshair ------------------------------ */
 
+/** The crosshair, drawn hidden into each price-chart render and positioned
+ *  by drawCrosshair(): vertical and horizontal lines, a price tag on the
+ *  right axis and a time tag under the plot. [data-xhair] is what
+ *  hideCrosshair() looks for. */
 function crosshairMarkup(padL, padT, innerW, innerH) {
   return `<g class="xhair" data-xhair style="display:none">
     <line data-xv y1="${padT}" y2="${padT + innerH}"/>
@@ -672,6 +807,9 @@ function barAtClientX(svg, clientX) {
   return i >= 0 && i < c.n ? i : null;
 }
 
+/** Hover handlers for one price-chart SVG. Attached on every render, since
+ *  each render replaces the SVG; the pointer position is kept on
+ *  state.xhair so the next render can put the crosshair back. */
 function attachCrosshair(svg) {
   svg.addEventListener("pointermove", (ev) => {
     // Remembered so a re-render can restore it -- see drawCrosshair's caller.
@@ -719,8 +857,7 @@ function drawCrosshair(svg, clientX, clientY) {
   pt.textContent = price.toFixed(2);
 
   const tg = g.querySelector("[data-xtime]");
-  const stamp = String(c.time[i]);
-  const label = c.daily ? stamp.slice(0, 10) : stamp.slice(11, 16);
+  const label = barWhen(c.time[i], c.daily, false);
   const tw = label.length * 6 + 8;
   tg.querySelector("rect").setAttribute("x", Math.min(Math.max(cx - tw / 2, c.padL), c.padL + c.innerW - tw));
   tg.querySelector("rect").setAttribute("y", c.padT + c.innerH + 2);
@@ -737,6 +874,9 @@ function drawCrosshair(svg, clientX, clientY) {
   renderReadout(i);
 }
 
+/** Hide every [data-xhair] on the page -- the price chart's and the
+ *  indicator panes' -- and return the readout to the latest bar.
+ *  Document-wide, which is why the Chart view marks its own [data-txhair]. */
 function hideCrosshair() {
   document.querySelectorAll("[data-xhair]").forEach((g) => (g.style.display = "none"));
   renderReadout(null);
@@ -760,8 +900,7 @@ function renderReadout(index) {
   box.hidden = false;
 
   const i = index == null ? c.n - 1 : index;
-  const stamp = String(c.time[i]);
-  const when = c.daily ? stamp.slice(0, 10) : `${stamp.slice(0, 10)} ${stamp.slice(11, 16)}`;
+  const when = barWhen(c.time[i], c.daily, true);
   const dir = c.close[i] >= c.open[i] ? "up" : "dn";
 
   // Indicators are indexed over the whole series; the chart shows a window.
@@ -803,6 +942,10 @@ function syncIndicatorCrosshair(cx) {
 
 /* ------------------------------ zoom / pan ------------------------------ */
 
+/** Wheel zoom (about the cursor) and drag-to-pan for one price-chart SVG.
+ *  Both write state.zoom -- fractional bar indices, null = fit all -- and
+ *  re-render. The span never drops below 5 bars, and zooming out to the
+ *  whole series resets it to null. */
 function attachZoom(svg, total, padL, innerW) {
   const toIndex = (clientX) => {
     const r = svg.getBoundingClientRect();
@@ -826,29 +969,37 @@ function attachZoom(svg, total, padL, innerW) {
     renderPriceChart();
   }, { passive: false });
 
-  let dragging = null;
+  // The drag lives on `state`, not in this closure: every pan step re-renders
+  // and replaces this SVG, so a closure variable died with the first step and
+  // a drag moved the chart once. The Chart view keeps its drag on tech.drag
+  // for the same reason.
   svg.addEventListener("pointerdown", (ev) => {
     const [lo, hi] = visibleWindow(total);
-    dragging = { x: ev.clientX, lo, hi };
+    state.pan = { x: ev.clientX, lo, hi };
     svg.classList.add("panning");
-    svg.setPointerCapture(ev.pointerId);
   });
   svg.addEventListener("pointermove", (ev) => {
-    if (!dragging) return;
+    const drag = state.pan;
+    if (!drag || !(ev.buttons & 1)) { state.pan = null; return; }
     const r = svg.getBoundingClientRect();
-    const span = dragging.hi - dragging.lo;
+    const span = drag.hi - drag.lo;
     const barsPerPx = span / (innerW * (r.width / svg.viewBox.baseVal.width));
-    const shift = -(ev.clientX - dragging.x) * barsPerPx;
-    let nlo = Math.min(Math.max(dragging.lo + shift, 0), total - span);
+    const shift = -(ev.clientX - drag.x) * barsPerPx;
+    let nlo = Math.min(Math.max(drag.lo + shift, 0), total - span);
     state.zoom = span >= total ? null : [nlo, nlo + span];
     renderPriceChart();
   });
-  const stop = () => { dragging = null; svg.classList.remove("panning"); };
+  const stop = () => { state.pan = null; svg.classList.remove("panning"); };
   svg.addEventListener("pointerup", stop);
   svg.addEventListener("pointercancel", stop);
-  svg.addEventListener("pointerleave", stop);
+  // Each pan step replaces this SVG under the cursor, and Chrome then fires a
+  // leave on the detached node. That is not the pointer leaving, and honouring
+  // it would end the drag after one step.
+  svg.addEventListener("pointerleave", () => { if (svg.isConnected) stop(); });
 }
 
+/** The zoom buttons: scale the visible span about its centre (factor < 1
+ *  zooms in), clamped to the series. Does nothing until bars have loaded. */
 function zoomBy(factor) {
   const total = state.bars?.close?.length || 0;
   if (!total) return;
@@ -862,10 +1013,11 @@ function zoomBy(factor) {
 
 /* --------------------------- indicator panes ---------------------------- */
 
-// Heights are +30% on the originals (62/68/62).
 /** Empty bar slots kept to the right of the last candle, price and panes alike. */
 const RIGHT_PAD_BARS = 10;
 
+/** The Terminal's indicator panes under the price chart, toggled by the
+ *  RSI / MACD / ADX buttons. */
 const IND_SPECS = [
   { key: "rsi", title: "RSI (14) + MA(20)", height: 101,
     series: [["rsi", "var(--series-violet)"], ["rsi_ma", "var(--series-gold)"]],
@@ -878,6 +1030,11 @@ const IND_SPECS = [
     domain: [0, 100], guides: [25] },
 ];
 
+/** RSI / MACD / ADX panes under the price chart, one SVG each, for the
+ *  indicators toggled on in state.indicators. They take the price chart's
+ *  window and slot width, so a bar sits at the same x in every pane. Values
+ *  are /api/history's `indicators`, indexed over the whole series and sliced
+ *  to [lo, hi). A pane with no finite values is left out. */
 function renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw) {
   const host = $("indicator-panes");
   const ind = state.bars?.indicators;
@@ -959,6 +1116,8 @@ function renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw) {
 
 /* ------------------- horizontal tabbed exposure by strike --------------- */
 
+/** Metric tabs over the Terminal's horizontal exposure chart, one per
+ *  METRICS entry. A click redraws just that chart, not the whole view. */
 function renderExpTabs() {
   $("exp-tabs").innerHTML = Object.entries(METRICS)
     .map(([k, m]) => `<button data-tab="${k}" aria-selected="${state.expTab === k}">${m.label}</button>`)
@@ -1043,6 +1202,11 @@ function renderExposureH(d) {
 
 /* --------------------------- order flow & bias -------------------------- */
 
+/** Order flow & bias panel: the call/put volume split, then one row per
+ *  reading with an up/down/flat arrow. Momentum and price-vs-VWAP read
+ *  state.bars as of this render -- first to last close of whatever range the
+ *  chart has loaded -- and say "needs price history" until a render finds
+ *  bars loaded. The put/call rows treat 0.95-1.05 as balanced. */
 function renderOrderFlow(d) {
   const cv = d.totals.call_volume || 0, pv = d.totals.put_volume || 0;
   $("sv-fill").style.width = `${(cv / Math.max(cv + pv, 1)) * 100}%`;
@@ -1180,6 +1344,8 @@ const EXPOSURE_TILES = [
   ["vex", "VEX", "$ per +1 vol pt"], ["thex", "THEX", "$ per day"],
 ];
 
+/** Columns view: market bias, spot & levels, the level radar and the
+ *  vertical signal chart, all from one exposure payload. */
 function renderColumns(d) {
   renderBias(d);
   renderSpot(d);
@@ -1187,6 +1353,9 @@ function renderColumns(d) {
   renderChartsV(d);
 }
 
+/** Market-bias panel: the server's regime label and how it was derived, six
+ *  exposure totals, 0DTE share of GEX, put/call ratios and the OI split,
+ *  then placeholders for measures gexdash cannot compute. */
 function renderBias(d) {
   const r = d.regime || {};
   $("regime").className = `regime ${(r.label || "").toLowerCase()}`;
@@ -1216,6 +1385,10 @@ function renderBias(d) {
   renderUnavailable("unavailable-bias", d, ["oi_flow", "volume_bias", "kinetics", "dealer_regime"]);
 }
 
+/** Placeholder tiles for measures the reference dashboards show but a
+ *  nightly OI snapshot cannot produce, each with the server's reason
+ *  (`d.unavailable`, UNAVAILABLE_TILES in server.py). Only the `keys` the
+ *  server lists are shown, as a dash rather than an invented number. */
 function renderUnavailable(hostId, d, keys) {
   const host = $(hostId);
   if (!host) return;
@@ -1232,6 +1405,10 @@ const GEX_LEVEL_ROWS = [
   ["max_neg_gex", "Max −GEX", "var(--neg)"],
 ];
 
+/** Spot & levels panel: spot and instrument details, the GEX levels table
+ *  (exposure, strike, distance from spot), max pain with its expiry,
+ *  resistance and support as distances to the call and put walls, and the
+ *  volume POC. */
 function renderSpot(d) {
   $("spot").textContent = priceFmt(d.spot);
   const im = d.instrument_meta || {};
@@ -1268,6 +1445,8 @@ const RADAR_LEVELS = [
   ["max_neg_gex", "Max −GEX"],
 ];
 
+/** Level radar: every level that has a strike, plus spot, sorted by price
+ *  from the top, so the reader sees where spot sits among them. */
 function renderRadar(d) {
   const rows = RADAR_LEVELS
     .filter(([k]) => d.levels[k] && d.levels[k].strike !== null)
@@ -1289,6 +1468,11 @@ function renderRadar(d) {
 const V_SPECS = ["gex", "dex", "vanx", "volume"];
 const AXIS_BAND = 20, PLOT_H = 86;
 
+/** Columns signal chart: GEX, DEX, vanna and volume as vertical small
+ *  multiples, one SVG each over the same strikes (±5% of spot, or all of
+ *  them if fewer than five fall inside), with spot, flip and wall markers.
+ *  Marker labels go on the first plot only, strike labels on the last.
+ *  Rebuilt from scratch, so any hover is cleared first. */
 function renderChartsV(d) {
   const host = $("charts");
   clearHover();
@@ -1384,6 +1568,9 @@ function renderChartsV(d) {
   });
 }
 
+/** Hovering any small multiple highlights that strike on all of them and
+ *  shows its values in the tooltip. `idx` maps the plotted strike back to
+ *  the payload's arrays; the values are read from state.data. */
 function onHover(ev, svg, width, strikes, idx, left, band) {
   const rect = svg.getBoundingClientRect();
   const i = Math.floor((((ev.clientX - rect.left) / rect.width) * width - left) / band);
@@ -1403,6 +1590,7 @@ function onHover(ev, svg, width, strikes, idx, left, band) {
   tt.style.top = `${Math.min(ev.clientY + 14, window.innerHeight - 190)}px`;
 }
 
+/** Hide the strike tooltip and collapse every hover band. */
 function clearHover() {
   $("tooltip").classList.remove("on");
   document.querySelectorAll("[data-hoverband]").forEach((b) => b.setAttribute("width", 0));
@@ -1410,6 +1598,8 @@ function clearHover() {
 
 /* ----------------------------------------------------------- table view */
 
+/** Strike table: every strike in the payload, not just the window the
+ *  charts show. Drawn only while open (the ▤ table button). */
 function renderTableView(d) {
   $("tableview-card").hidden = !state.showTable;
   if (!state.showTable) return;
@@ -1426,6 +1616,9 @@ function renderTableView(d) {
 
 /* ---------------------------------------------------------- diagnostics */
 
+/** Provenance list: the assumptions and sources behind the numbers on
+ *  screen (expiry window, dealer sign, pricing model, rates, OI date, cache
+ *  age, bars, breadth). Values are escaped; labels are fixed strings. */
 function renderDiagnostics(d) {
   const g = d.diagnostics;
   const items = [
@@ -1452,22 +1645,36 @@ function renderDiagnostics(d) {
 
 /* --------------------------------------------------------- view switch */
 
+/** Switch between terminal, columns and chart (an unknown name falls back
+ *  to terminal) and remember the choice. The newly mounted view is
+ *  re-rendered; the Terminal fetches bars and breadth the first time it
+ *  needs them; the Chart view's refresh timer runs only while it is
+ *  mounted. `reload: false` is for startup, before any payload exists. */
 function setView(view, { reload = true } = {}) {
-  state.view = view === "columns" ? "columns" : "terminal";
-  localStorage.setItem("gexdash-view", state.view);
+  state.view = VIEWS.includes(view) ? view : "terminal";
+  storeSet("gexdash-view", state.view);
+  // Scopes the exposure-only chrome (filters, strip, provenance), which the
+  // chart view hides -- it does not read the exposure payload.
+  document.body.dataset.view = state.view;
 
-  $("view-terminal").hidden = state.view !== "terminal";
-  $("view-columns").hidden = state.view !== "columns";
-  ["terminal", "columns"].forEach((v) =>
-    $(`view-${v}-btn`).setAttribute("aria-selected", String(state.view === v)));
+  VIEWS.forEach((v) => {
+    $(`view-${v}`).hidden = state.view !== v;
+    $(`view-${v}-btn`).setAttribute("aria-selected", String(state.view === v));
+  });
 
   // A hidden container reports clientWidth 0, so every chart laid out while
   // the view was hidden has degenerate geometry. Switching must re-render,
   // not merely unhide.
-  if (reload && state.data) render(state.data);
+  if (reload && state.data && state.view !== "chart") render(state.data);
   if (state.view === "terminal") {
     if (!state.bars) loadBars(); else renderPriceChart();
     if (!state.breadth) loadBreadth(); else renderInternals();
+  }
+  if (state.view === "chart") {
+    if (!tech.data) { renderTechnicals(); loadTechnicals(); } else renderTechnicals();
+    startTechTimer();
+  } else {
+    stopTechTimer();
   }
 }
 
@@ -1483,7 +1690,7 @@ $("f-symbol").addEventListener("change", () => {
   if (state.view === "terminal") { loadBars(); loadBreadth(); }
 });
 
-["view-terminal-btn", "view-columns-btn"].forEach((id) =>
+["view-terminal-btn", "view-columns-btn", "view-chart-btn"].forEach((id) =>
   $(id).addEventListener("click", () => setView($(id).dataset.view)));
 
 ["chk-levels", "chk-vwap", "chk-fit"].forEach((id) =>
@@ -1549,6 +1756,10 @@ $("btn-refresh").addEventListener("click", async () => {
   finally { $("btn-refresh").disabled = false; }
 });
 
+/** Stream exposure over SSE (/api/stream, a payload every 2s) with the
+ *  current filters; each message goes through render(). Filter and symbol
+ *  changes restart it. Bars and breadth refresh on a separate 30s timer,
+ *  only while the Terminal view is mounted. */
 function startStream() {
   stopStream();
   const es = new EventSource(`/api/stream?${params()}&interval=2`);
@@ -1572,6 +1783,7 @@ function startStream() {
   }, 30_000);
 }
 
+/** Close the stream and its bar/breadth timer, and show the paused state. */
 function stopStream() {
   if (state.stream) state.stream.close();
   state.stream = null;
@@ -1589,21 +1801,47 @@ $("btn-theme").addEventListener("click", () => {
     ? root.dataset.theme === "dark"
     : matchMedia("(prefers-color-scheme: dark)").matches;
   root.dataset.theme = isDark ? "light" : "dark";
-  localStorage.setItem("gexdash-theme", root.dataset.theme);
-  if (state.data) render(state.data);
+  storeSet("gexdash-theme", root.dataset.theme);
+  if (state.view === "chart") renderTechnicals();
+  else if (state.data) render(state.data);
+});
+
+/* Time zone: URL parameter → stored preference → exchange time. Choosing one
+ * stores it; a ?tz= link shows a zone without changing the stored one, as
+ * ?theme= does. Display only: nothing is refetched. */
+function fillZonePicker() {
+  $("f-tz").innerHTML = tzOptions()
+    .map((o) => `<option value="${esc(o.value)}">${esc(o.text)}</option>`).join("");
+  $("f-tz").value = tz.choice;
+}
+tzOnChange(() => {
+  fillZonePicker();
+  renderClock();
+  if (state.view === "chart") renderTechnicals();
+  else if (state.view === "terminal" && state.bars) renderPriceChart();
+});
+$("f-tz").addEventListener("change", (e) => {
+  storeSet(TZ_STORAGE_KEY, e.target.value);
+  tzSet(e.target.value);
 });
 
 /* Theme and view both resolve: URL parameter → stored preference → default.
  * The URL form makes a specific screen linkable and screenshot-testable. */
 const urlParams = new URLSearchParams(location.search);
-const savedTheme = urlParams.get("theme") || localStorage.getItem("gexdash-theme");
+const savedTheme = urlParams.get("theme") || storeGet("gexdash-theme");
 if (savedTheme === "dark" || savedTheme === "light") document.documentElement.dataset.theme = savedTheme;
+tzSet(urlParams.get("tz") || storeGet(TZ_STORAGE_KEY) || "exchange");
 
 let resizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => state.data && render(state.data), 150);
+  // The chart view does not depend on the exposure payload having loaded.
+  resizeTimer = setTimeout(() => {
+    if (state.view === "chart") renderTechnicals();
+    else if (state.data) render(state.data);
+  }, 150);
 });
 
-setView(urlParams.get("view") || localStorage.getItem("gexdash-view") || "terminal", { reload: false });
+initTechnicals();
+setView(urlParams.get("view") || storeGet("gexdash-view") || "terminal", { reload: false });
 loadMeta().then(() => Promise.all([load(), loadBars(), loadBreadth()])).catch((e) => notice(e.message, true));

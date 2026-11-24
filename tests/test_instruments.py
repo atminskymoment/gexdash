@@ -15,7 +15,7 @@ from gexdash import exposure, instruments
 from gexdash.exposure import ExposureConfig
 from gexdash.providers.mock import DEFAULT_SPOT, MockProvider
 
-ALL = ["SPX", "SPY", "ES", "NDX", "QQQ", "NQ"]
+ALL = ["SPX", "SPY", "ES", "NDX", "QQQ", "NQ", "USO"]
 
 
 # ----------------------------------------------------------------------
@@ -32,6 +32,7 @@ ALL = ["SPX", "SPY", "ES", "NDX", "QQQ", "NQ"]
         ("NDX", 100.0),   # Nasdaq-100 index option: $100
         ("QQQ", 100.0),   # 100 shares
         ("NQ", 20.0),     # CME E-mini Nasdaq-100: $20 x index
+        ("USO", 100.0),   # 100 shares
     ],
 )
 def test_multipliers_match_contract_specs(key, multiplier):
@@ -40,7 +41,8 @@ def test_multipliers_match_contract_specs(key, multiplier):
 
 @pytest.mark.parametrize(
     "key,is_future",
-    [("SPX", False), ("SPY", False), ("ES", True), ("NDX", False), ("QQQ", False), ("NQ", True)],
+    [("SPX", False), ("SPY", False), ("ES", True), ("NDX", False), ("QQQ", False), ("NQ", True),
+     ("USO", False)],
 )
 def test_pricing_model_follows_the_instrument_type(key, is_future):
     inst = instruments.get(key)
@@ -57,7 +59,7 @@ def test_pricing_model_follows_the_instrument_type(key, is_future):
         # are American-style (weeklies and EOM are European).
         ("ES", False), ("NQ", False),
         # American, physically settled on a dividend-paying ETF.
-        ("SPY", False), ("QQQ", False),
+        ("SPY", False), ("QQQ", False), ("USO", False),
     ],
 )
 def test_exercise_style(key, european):

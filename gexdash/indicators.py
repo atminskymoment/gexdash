@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["wilder", "ema", "sma", "rsi", "macd", "adx", "compute_all"]
+__all__ = [
+    "wilder", "ema", "sma", "smma", "rsi", "macd", "adx", "atr", "bollinger", "supertrend",
+    "compute_all",
+]
 
 
 def ema(values: np.ndarray, length: int) -> np.ndarray:
@@ -77,6 +80,123 @@ def wilder(values: np.ndarray, length: int) -> np.ndarray:
         acc += (values[i] - acc) / length
         out[i] = acc
     return out
+
+
+def smma(values: np.ndarray, length: int) -> np.ndarray:
+    """Smoothed moving average -- the chart-platform name for Wilder's average.
+
+    ``smma[i] = (smma[i-1] * (n-1) + x[i]) / n``, seeded with the first
+    n-bar simple mean. That is :func:`wilder` exactly, so it is one function
+    under two names rather than a second implementation that could drift.
+    It is *not* an SMA and not an EMA of the same length: SMMA(200) responds
+    like a ~400-period EMA.
+    """
+    return wilder(values, length)
+
+
+def bollinger(close: np.ndarray, length: int = 20, mult: float = 2.0) -> dict[str, np.ndarray]:
+    """Bollinger bands: SMA basis +/- ``mult`` population standard deviations.
+
+    Population (ddof=0), not sample (ddof=1). Bollinger defined the bands
+    with the population figure and charting platforms follow him; numpy's
+    and pandas' defaults differ from each other, and the sample form widens
+    a 20-bar band by ~2.6% -- the kind of error that never looks wrong.
+    """
+    close = np.asarray(close, dtype=float)
+    n = len(close)
+    basis = sma(close, length)
+    dev = np.full(n, np.nan)
+    for i in range(length - 1, n):
+        window = close[i - length + 1 : i + 1]
+        if np.all(np.isfinite(window)):
+            dev[i] = window.std(ddof=0)
+    return {"basis": basis, "upper": basis + mult * dev, "lower": basis - mult * dev}
+
+
+def atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, length: int = 14) -> np.ndarray:
+    """Wilder's average true range, aligned with the input bars.
+
+    The first bar has no previous close, so its true range is just its
+    high-low span; the Wilder seed then covers bars ``0..length-1``.
+    """
+    high = np.asarray(high, dtype=float)
+    low = np.asarray(low, dtype=float)
+    close = np.asarray(close, dtype=float)
+    if len(close) == 0:
+        return np.array([])
+    prev_close = np.concatenate([[close[0]], close[:-1]])
+    tr = np.maximum.reduce([high - low, np.abs(high - prev_close), np.abs(low - prev_close)])
+    tr[0] = high[0] - low[0]
+    return wilder(tr, length)
+
+
+def supertrend(
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, *,
+    period: int = 10, mult: float = 3.0, wilder_atr: bool = True,
+) -> dict[str, np.ndarray]:
+    """Supertrend, ported line for line from the TradingView v4 script
+    ("Supertrend", inputs ATR Period 10, Source hl2, Multiplier 3.0,
+    Change ATR Calculation Method true).
+
+    Pine evaluates bar by bar, and three details of that evaluation decide
+    whether a port matches it:
+
+    * ``up[1]`` is the previous bar's band *after* its ratchet, and
+      ``nz(up[1], up)`` falls back to this bar's raw band while the previous
+      one does not exist yet.
+    * The trend flips by comparing this bar's close with the *previous*
+      bar's bands (``dn1`` / ``up1``), not with this bar's.
+    * Both bands are updated on every bar whatever the trend; the trend starts
+      at 1 and holds through the ATR warm-up, because comparisons with na are
+      false in Pine as with nan here.
+
+    ``wilder_atr=True`` is Pine's ``atr(period)`` -- Wilder's RMA of the true
+    range, seeded with its first-``period`` mean, first true range high-low,
+    which is exactly :func:`atr`. False is the script's alternative,
+    ``sma(tr, period)``, where ``tr`` is na on the first bar.
+
+    Returns ``up``, ``dn`` (the ratcheted bands, every bar), ``trend``
+    (+1 / -1) and boolean ``buy`` / ``sell`` arrays (the bar the trend flips).
+    """
+    high = np.asarray(high, dtype=float)
+    low = np.asarray(low, dtype=float)
+    close = np.asarray(close, dtype=float)
+    n = len(close)
+    src = (high + low) / 2.0
+    if wilder_atr:
+        atr_values = atr(high, low, close, period)
+    else:
+        prev_close = np.concatenate([[np.nan], close[:-1]])
+        tr = np.maximum.reduce([high - low, np.abs(high - prev_close), np.abs(low - prev_close)])
+        tr[0] = np.nan                     # Pine's `tr` variable: na without close[1]
+        atr_values = sma(tr, period)
+
+    up = np.full(n, np.nan)
+    dn = np.full(n, np.nan)
+    trend = np.ones(n)
+    buy = np.zeros(n, dtype=bool)
+    sell = np.zeros(n, dtype=bool)
+    for i in range(n):
+        up_raw = src[i] - mult * atr_values[i]
+        dn_raw = src[i] + mult * atr_values[i]
+        prev_up = up[i - 1] if i > 0 else np.nan
+        prev_dn = dn[i - 1] if i > 0 else np.nan
+        up1 = prev_up if np.isfinite(prev_up) else up_raw          # nz(up[1], up)
+        dn1 = prev_dn if np.isfinite(prev_dn) else dn_raw          # nz(dn[1], dn)
+        prev_close = close[i - 1] if i > 0 else np.nan
+        up[i] = max(up_raw, up1) if prev_close > up1 else up_raw   # nan > x is False
+        dn[i] = min(dn_raw, dn1) if prev_close < dn1 else dn_raw
+
+        t = trend[i - 1] if i > 0 else 1.0                         # nz(trend[1], trend)
+        if t == -1 and close[i] > dn1:
+            t = 1.0
+        elif t == 1 and close[i] < up1:
+            t = -1.0
+        trend[i] = t
+        if i > 0:
+            buy[i] = t == 1 and trend[i - 1] == -1
+            sell[i] = t == -1 and trend[i - 1] == 1
+    return {"up": up, "dn": dn, "trend": trend, "buy": buy, "sell": sell, "atr": atr_values}
 
 
 def rsi(close: np.ndarray, length: int = 14) -> np.ndarray:

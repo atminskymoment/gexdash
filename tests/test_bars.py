@@ -127,13 +127,52 @@ def test_interval_and_lookback_are_respected():
 # ----------------------------------------------------------------------
 
 
-def test_schwab_refuses_futures_history_explicitly():
-    """Must raise the *typed* error, so the server degrades instead of 502ing.
-
-    The futures roots are continuous-contract aliases and unverified against
-    Schwab, exactly as their chains are.
-    """
+def _schwab_with_candles(closes):
+    """A SchwabProvider whose /pricehistory returns the given closes."""
     p = SchwabProvider.__new__(SchwabProvider)
-    for key in ("ES", "NQ"):
-        with pytest.raises(PriceHistoryUnavailable, match="unverified"):
-            p.get_price_history(instruments.get(key))
+    candles = [
+        {"datetime": 1_700_000_000_000 + i * 86_400_000, "open": c, "high": c + 1,
+         "low": c - 1, "close": c, "volume": 1000}
+        for i, c in enumerate(closes)
+    ]
+    p._get = lambda path, params: {"candles": candles, "empty": False}
+    return p
+
+
+def test_schwab_refuses_futures_history_that_resolves_to_another_security():
+    """Bare ``ES`` on Schwab is Eversource Energy at ~$71. Priced as an E-mini
+    it would chart perfectly plausibly, so it must be refused -- with the
+    *typed* error, so the server degrades instead of 502ing."""
+    p = _schwab_with_candles([70.1, 70.9, 71.4])
+    with pytest.raises(PriceHistoryUnavailable, match="plausible band"):
+        p.get_price_history(instruments.get("ES"))
+
+
+def test_schwab_serves_plausible_futures_history_marked_unverified():
+    """A futures root that passes the tripwire is served, but says what it is."""
+    p = _schwab_with_candles([7790.0, 7801.5, 7795.25])
+    bars = p.get_price_history(instruments.get("ES"))
+    assert bars.last == 7795.25
+    assert "unverified" in bars.meta and "/ES" in bars.meta["unverified"]
+
+
+def test_schwab_equity_history_carries_no_unverified_note():
+    p = _schwab_with_candles([720.0, 722.0, 725.5])
+    assert "unverified" not in p.get_price_history(instruments.get("QQQ")).meta
+
+
+def test_schwab_asks_for_regular_hours_only_when_the_plan_says_so():
+    """The Chart view draws ETFs in regular hours, TradingView's default; the
+    terminal chart keeps extended hours. One flag on the plan decides."""
+    from gexdash.technicals import plan_for
+
+    seen = []
+    p = _schwab_with_candles([720.0, 722.0, 725.5])
+    inner = p._get
+    p._get = lambda path, params: (seen.append(params), inner(path, params))[1]
+    rth, _ = plan_for("5D", "5m", session="rth")
+    eth, _ = plan_for("5D", "5m", session="eth")
+    p.get_price_history(instruments.get("QQQ"), plan=rth)
+    p.get_price_history(instruments.get("QQQ"), plan=eth)
+    assert [q["needExtendedHoursData"] for q in seen] == ["false", "true"]
+    assert all("startDate" in q and "endDate" in q for q in seen)

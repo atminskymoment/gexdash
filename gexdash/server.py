@@ -2,11 +2,21 @@
 
 Endpoints
 ---------
-``GET /``                     the dashboard
+``GET /``                     the dashboard (Terminal, Columns and Chart views)
+``GET /connect``              the Schwab connect page
+``GET /api/meta``             instruments, families, chart capabilities
 ``GET /api/exposure``         full exposure surface + levels + diagnostics
 ``GET /api/spot``             current underlying price
 ``GET /api/stream``           SSE: spot ticks with the surface recomputed
 ``POST /api/refresh``         force a fresh chain pull, bypassing the cache
+``GET /api/history``          the Terminal's candles + RSI/MACD/ADX, 1-minute to monthly
+``GET /api/breadth``          exchange internals: advancing/declining, TICK, TRIN, A/D line
+``GET /api/technicals``       the Chart view, 1-minute to weekly: averages, bands, profile,
+                              signals, Supertrend, futures roll adjustment
+``GET /api/auth/status``      Schwab token state; ``POST /api/auth/exchange`` and
+                              ``POST /api/auth/logout`` complete or drop it
+
+``docs/api.md`` documents each one; ``/api/docs`` serves the OpenAPI view.
 
 The split matters and mirrors the tier-A architecture: the *chain* is pulled
 once a day because open interest is an OCC once-daily figure, while *spot*
@@ -27,10 +37,10 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import exposure, instruments, interpretation
+from . import exposure, futures, instruments, interpretation, technicals
 from .exposure import EXPIRY_WINDOWS, ExposureConfig
 from .providers import build_provider
-from .sessions import market_phase
+from .sessions import market_phase, trim_sessions
 from .breadth import FAMILY_EXCHANGE, symbols_for_family
 from .history import capability_matrix, resolve as resolve_plan
 from .providers.base import (
@@ -74,6 +84,7 @@ def set_provider(provider: CachedProvider) -> None:
     global _provider
     _provider = provider
     _breadth_cache.clear()
+    _tech_cache.clear()
 
 
 def _config(
@@ -83,6 +94,12 @@ def _config(
     rate: float,
     div: float,
 ) -> ExposureConfig:
+    """The exposure config for a request.
+
+    Only ``expiry_window`` is validated here (400). An unknown ``dealer_sign``
+    fails later, in ``exposure.compute``; an unknown ``flip_method`` is
+    treated as ``spot_solve``.
+    """
     if expiry_window not in EXPIRY_WINDOWS:
         raise HTTPException(400, f"expiry_window must be one of {sorted(EXPIRY_WINDOWS)}")
     return ExposureConfig(
@@ -95,6 +112,7 @@ def _config(
 
 
 def _resolve(symbol: str):
+    """The instrument for ``symbol``, or a 404."""
     try:
         return instruments.get(symbol)
     except KeyError as exc:
@@ -102,6 +120,13 @@ def _resolve(symbol: str):
 
 
 def _build_payload(inst, cfg: ExposureConfig, *, live_spot: bool = True) -> dict:
+    """The ``/api/exposure`` payload, shared with ``/api/stream``.
+
+    Reads the cached chain (expiries up to 60 days out), re-prices it at live
+    spot unless ``live_spot`` is False -- keeping the chain's own spot if the
+    quote raises ProviderError -- and adds provenance, cache and auth state,
+    instrument metadata and the written reading. Blocking; run it in a thread.
+    """
     provider = get_provider()
     chain = provider.get_chain(inst, max_dte=60)
 
@@ -206,6 +231,23 @@ async def api_exposure(
     rate: float = Query(0.042),
     div: float | None = Query(None, description="dividend yield; omit to use the instrument default"),
 ):
+    """Full exposure surface for one instrument, with levels, regime and a written reading.
+
+    The cached chain snapshot (refetched once it is 12 hours old; expiries up to 60 days out) is
+    re-priced at a fresh spot quote, or at the chain's own underlying price if the provider returns an
+    error for the quote. `expiry_window` picks which of those expiries count, so `all` means all within
+    60 days; `dealer_sign` is the assumed dealer positioning; `flip_method` is how the gamma flip is
+    located; `rate` and `div` are pricing inputs (omit `div` to use the instrument's own dividend
+    yield). The active choices are echoed in `diagnostics`.
+
+    Per-strike arrays are aligned with `strikes`. Units: GEX $ delta per +1% spot, DEX $ delta, VANX
+    $ delta per vol point, CEX $ delta per day, VEX $ P&L per vol point, THEX $ P&L per day.
+    `stale` and `degraded_reason` say when the chain is not a clean current fetch; with
+    `oi_unavailable` the exposure figures must be shown as unavailable, not as zero.
+
+    Errors: 400 unknown `expiry_window`; 404 unknown `symbol`; 422 no live contracts in the window
+    (or an unknown `dealer_sign`); 502 provider failure with no cached chain to fall back on.
+    """
     inst = _resolve(symbol)
     cfg = _config(expiry_window, dealer_sign, flip_method, rate, div)
     async with _lock:
@@ -219,6 +261,10 @@ async def api_exposure(
 
 @app.get("/api/spot")
 async def api_spot(symbol: str = Query("SPX")):
+    """Current underlying price, straight from the provider (spot is never cached).
+
+    Returns `symbol`, `spot` and `time` (server time, UTC). 404 unknown `symbol`; 502 provider error.
+    """
     inst = _resolve(symbol)
     try:
         spot = await asyncio.to_thread(get_provider().get_spot, inst)
@@ -229,6 +275,13 @@ async def api_spot(symbol: str = Query("SPX")):
 
 @app.post("/api/refresh")
 async def api_refresh(symbol: str = Query("SPX")):
+    """Force a chain pull, bypassing the 12-hour cache and the empty-chain retry back-off.
+
+    Rarely needed, since open interest changes once a day. If the pull fails or comes back without
+    open interest, the last good snapshot stays in service and is what this summarises: `fetched_at`
+    says which chain is now being served. 404 unknown `symbol`; 502 provider failure with no snapshot
+    to fall back on.
+    """
     inst = _resolve(symbol)
     async with _lock:
         try:
@@ -261,6 +314,8 @@ async def api_stream(
     cfg = _config(expiry_window, dealer_sign, flip_method, rate, div)
 
     async def gen():
+        """One ``data:`` frame per tick until the client goes or ``max_events``
+        is reached. A failed tick is sent as ``{"error": ...}`` and counted."""
         sent = 0
         while True:
             # Without this the generator outlives its client: a closed tab
@@ -293,6 +348,7 @@ async def api_history(
     range: str = Query("1D", description="1D 5D 10D 1M 3M 6M YTD 1Y 2Y 5Y 10Y"),
     interval: str = Query("1m", description="1m 5m 10m 15m 30m 1h 2h 4h 1D 1W 1Mo"),
     indicators: bool = Query(True),
+    adjust: bool = Query(True, description="futures: adjust for contract changes, as thinkorswim does"),
     # Legacy form, kept so existing callers keep working.
     interval_minutes: int | None = Query(None, deprecated=True),
     lookback_hours: float | None = Query(None, deprecated=True),
@@ -336,18 +392,178 @@ async def api_history(
     except ProviderError as exc:
         return {"available": False, "symbol": inst.key, "reason": f"provider error: {exc}"}
 
+    # Session-counted ranges: the window over-fetched, keep the last N
+    # sessions -- before VWAP, the session range and the indicators see them.
+    if plan is not None and plan.sessions:
+        bars = trim_sessions(bars, plan.sessions, 6 if inst.is_future else 4)
+    rolls: list[dict] = []
+    adjusted = bool(inst.is_future and adjust)
+    if adjusted:
+        bars, rolls = futures.back_adjust(bars)     # a copy; the feed's bars are untouched
+
     payload = bars.to_dict()
     payload["available"] = True
     payload["symbol"] = inst.key
     payload["synthetic"] = bool((bars.meta or {}).get("synthetic"))
+    payload["adjusted"] = adjusted
+    payload["rolls"] = rolls
     if plan is not None:
         payload["plan"] = plan.to_dict()
+        # The terminal chart shows plan notes, not meta: a futures series
+        # served unverified must say so where it is drawn.
+        lead = []
+        if payload["meta"].get("unverified"):
+            lead.append(payload["meta"]["unverified"])
+        if inst.is_future:
+            lead.append(futures.adjust_note(inst.quote_symbol, adjusted=adjusted, rolls=rolls))
+        payload["plan"]["notes"] = [*lead, *payload["plan"]["notes"]]
 
     if indicators and len(bars) > 1:
         from .indicators import compute_all
         payload["indicators"] = await asyncio.to_thread(
             compute_all, bars.high, bars.low, bars.close
         )
+    return payload
+
+
+#: Server-side bar cache for the technical chart, keyed by what was actually
+#: fetched: (symbol, frequency type, native frequency, extended hours, days).
+#: Each bar size fetches one fixed window, so every range of it is cut from
+#: the same request -- 1Y -> 2Y -> 3M on one symbol is one provider call --
+#: and 30m, 1h and 4h over the same session share their 30-minute fetch.
+_TECH_TTL_SECONDS = 60.0
+_tech_cache: dict[tuple, tuple[float, object]] = {}
+
+
+class _NoBars(Exception):
+    """The provider could not serve bars; carries the reason for the payload."""
+
+
+async def _tech_bars(inst, source, plan) -> tuple[object, float]:
+    """Bars for a plan, from the cache when fresh. Returns (bars, age)."""
+    days = round((plan.end - plan.start).total_seconds() / 86400) if plan.start else 0
+    key = (inst.key, plan.frequency_type, plan.frequency, plan.extended_hours, days)
+    ttl = technicals.INTRADAY_TTL_SECONDS if plan.frequency_type == "minute" else _TECH_TTL_SECONDS
+    cached = _tech_cache.get(key)
+    now = time.monotonic()
+    if cached and now - cached[0] < ttl:
+        return cached[1], now - cached[0]
+    try:
+        bars = await asyncio.to_thread(source.get_price_history, inst, plan=plan)
+    except PriceHistoryUnavailable as exc:
+        raise _NoBars(str(exc)) from None
+    except ProviderError as exc:
+        raise _NoBars(f"provider error: {exc}") from None
+    _tech_cache[key] = (now, bars)
+    return bars, 0.0
+
+
+@app.get("/api/technicals")
+async def api_technicals(
+    symbol: str = Query("QQQ"),
+    range: str = Query("1Y", description=" ".join(technicals.TECH_RANGES)),
+    interval: str = Query("1D", description=" ".join(technicals.TECH_INTERVALS)),
+    session: str = Query("auto", pattern="^(auto|rth|eth)$",
+                         description="intraday only: rth (ETF default), eth; futures are always full-session"),
+    st_period: int = Query(10, ge=1, le=200, description="Supertrend ATR period"),
+    st_mult: float = Query(3.0, gt=0, le=20, description="Supertrend ATR multiplier"),
+    adjust: bool = Query(True, description="futures: adjust for contract changes, as thinkorswim does"),
+):
+    """The technical chart: SMMA 20/50/100/200, EMA 9, Bollinger 20/2 and
+    20/3, RSI, MACD, volume and volume profile, 3M/52W levels, ranges, the
+    gexdash VAMS / BUY-ADD-TRIM-SELL rules and Supertrend, on intraday,
+    daily or weekly bars.
+
+    Indicators are computed over more history than is shown -- the feed's
+    full history for daily and weekly, the longest range plus ~1,000 bars
+    intraday -- and trimmed to ``range`` afterwards, so long averages are
+    converged at the left edge (and the payload says where they are not). A
+    range the bar size does not offer is replaced by its default, with a
+    note. Returns 200 with ``{"available": false, "reason": ...}`` when the
+    provider cannot serve bars.
+    """
+    inst = _resolve(symbol)
+    iv = technicals.TECH_INTERVALS.get(interval)
+    if iv is None:
+        raise HTTPException(400, f"unknown interval {interval!r}; known: {list(technicals.TECH_INTERVALS)}")
+    if range not in technicals.TECH_RANGES:
+        raise HTTPException(400, f"unknown range {range!r}; known: {list(technicals.TECH_RANGES)}")
+    notes: list[str] = []
+    if range not in iv.ranges:
+        notes.append(f"{range} is not offered on {iv.label} bars; showing {iv.default_range}.")
+        range = iv.default_range
+    kind, session_notes = technicals.session_kind(interval, is_future=inst.is_future, requested=session)
+    notes += session_notes
+    plan, display_start = technicals.plan_for(range, interval, session=kind)
+
+    provider = get_provider()
+    source = getattr(provider, "provider", provider)
+    if not isinstance(source, PriceHistoryProvider):
+        return {"available": False, "symbol": inst.key,
+                "reason": f"the {provider.name} provider does not supply price history"}
+
+    try:
+        bars, age = await _tech_bars(inst, source, plan)
+    except _NoBars as exc:
+        return {"available": False, "symbol": inst.key, "reason": str(exc)}
+
+    daily = None
+    if iv.intraday:
+        if iv.minutes != iv.native:
+            bars = await asyncio.to_thread(technicals.aggregate_session, bars, iv.minutes, kind)
+        # The 3M/52W levels are daily-bar levels whatever the chart's bar size.
+        daily_plan, _ = technicals.plan_for("1Y", "1D")
+        try:
+            daily, _ = await _tech_bars(inst, source, daily_plan)
+        except _NoBars:
+            daily = None
+
+    if len(bars) < 2:
+        return {"available": False, "symbol": inst.key,
+                "reason": f"only {len(bars)} bar(s) returned for {inst.key}"}
+
+    # Contract changes: adjusted copies, never the cached series itself. The
+    # daily bars behind the intraday 3M/52W levels get the same treatment.
+    rolls: list[dict] = []
+    adjusted = bool(inst.is_future and adjust)
+    if adjusted:
+        bars, rolls = futures.back_adjust(bars)
+        if daily is not None:
+            daily, _ = futures.back_adjust(daily)
+    elif inst.is_future:
+        _, rolls = futures.back_adjust(bars)    # positions only: where the series steps
+
+    display_start = technicals.display_start_for(range, bars, session=kind, fallback=display_start)
+    params = technicals.TechParams(st_period=st_period, st_mult=st_mult)
+    payload = await asyncio.to_thread(
+        technicals.compute, bars, display_start=display_start, interval=interval,
+        params=params, session=kind, daily=daily,
+    )
+    meta = bars.meta or {}
+    notes += payload["warmup"]["notes"]
+    first = payload["warmup"]["bars_before_window"]
+    shown = [r for r in rolls if r["index"] >= first]
+    if inst.is_future:
+        # About the rolls on screen; the warm-up's older ones move the long
+        # averages' left edge only slightly.
+        notes.insert(0, futures.adjust_note(inst.quote_symbol, adjusted=adjusted, rolls=shown))
+    if meta.get("unverified"):
+        notes.insert(0, meta["unverified"])
+    payload.update({
+        "available": True,
+        "symbol": inst.key,
+        "label": inst.label,
+        "range": range,
+        "adjusted": adjusted,
+        # Contract changes inside the window, indexed like the bars.
+        "rolls": [{**r, "i": r["index"] - first} for r in shown],
+        "synthetic": bool(meta.get("synthetic")),
+        "provider": provider.name,
+        "cached_seconds": round(age, 1),
+        "notes": notes,
+        "plan": plan.to_dict(),
+        "caps": technicals.capabilities(),
+    })
     return payload
 
 
@@ -455,6 +671,7 @@ async def api_auth_logout():
 
 @app.get("/connect")
 async def connect_page():
+    """Browser page for connecting a Schwab account: open the consent link, then paste the redirect URL."""
     return FileResponse(STATIC_DIR / "connect.html")
 
 
@@ -526,6 +743,12 @@ async def api_breadth(
 
 @app.get("/api/meta")
 async def api_meta():
+    """What the dashboard needs to build its controls: instruments, families and valid parameter values.
+
+    Also the current session phase, the provider name, the bar-size/range matrices for the two chart
+    endpoints (`chart` for `/api/history`, `technicals` for `/api/technicals`) and the exchange each
+    instrument family takes its breadth from.
+    """
     return {
         "instruments": [
             {
@@ -544,14 +767,16 @@ async def api_meta():
         "dealer_signs": ["long_calls_short_puts", "short_calls_long_puts", "all_long"],
         "flip_methods": ["spot_solve", "cumulative"],
         "provider": get_provider().name,
-        "views": ["columns", "terminal"],
+        "views": ["columns", "terminal", "chart"],
         "chart": capability_matrix(),
+        "technicals": technicals.capabilities(),
         "exchanges": FAMILY_EXCHANGE,
     }
 
 
 @app.get("/")
 async def index():
+    """The dashboard. `?symbol=`, `?view=` and `?theme=` are read by the page itself."""
     return FileResponse(
         STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache, must-revalidate"}
     )
@@ -569,6 +794,7 @@ class _RevalidatingStatic(StaticFiles):
     """
 
     def file_response(self, *args, **kwargs):
+        """The base response, with ``Cache-Control: no-cache, must-revalidate``."""
         response = super().file_response(*args, **kwargs)
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
@@ -579,6 +805,8 @@ if STATIC_DIR.exists():
 
 
 def main() -> None:
+    """The ``gexdash`` command: serve the app with uvicorn on ``GEXDASH_HOST``:``GEXDASH_PORT``,
+    127.0.0.1:8420 by default."""
     import uvicorn
 
     uvicorn.run(

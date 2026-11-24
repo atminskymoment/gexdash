@@ -34,6 +34,16 @@ from .chain import OptionChain
 
 @dataclass
 class CrossCheckReport:
+    """What :func:`cross_check` found.
+
+    ``contracts`` is the chain size; ``compared`` is how many contracts were
+    usable (positive IV, unexpired, provider value finite). The errors are
+    absolute, in the raw per-1.0 units :mod:`gexdash.greeks` returns, except
+    ``gamma_rel_mae``, which is relative to the provider's gamma (0.05 is 5%).
+    An error is None when the provider did not supply that greek or nothing
+    was comparable. ``rate`` and ``dividend`` are the r and q that were used.
+    """
+
     contracts: int
     compared: int
     delta_mae: float | None
@@ -125,6 +135,12 @@ def fit_rate(chain: OptionChain, *, q: float | None = None, lo: float = -0.02, h
 
 
 def main(argv: list[str] | None = None) -> int:
+    """The ``gexdash-crosscheck`` command (also ``python -m gexdash.crosscheck``).
+
+    Pulls a chain of expiries up to 60 days out from the chosen provider and
+    prints the report. Exits 1 on a mismatch, otherwise 0 -- including when
+    the provider supplies no greeks, since there is then nothing to fail.
+    """
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--symbol", default="SPX")
     ap.add_argument("--provider", default=None, help="mock | schwab (default: $GEXDASH_PROVIDER)")

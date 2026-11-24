@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -153,6 +157,39 @@ def test_store_round_trips_a_chain(tmp_path):
     # And the reloaded chain must still compute.
     res = exposure.compute(loaded, ExposureConfig(expiry_window="30dte"))
     assert np.isfinite(res.totals["gex"])
+
+
+def test_store_survives_concurrent_use_from_worker_threads(tmp_path):
+    """The server shares one store across its worker threads, and a fresh
+    install's first page load asks for exposure, bars and breadth at once.
+    Without the store's lock this crashed the process inside SQLite (exit 139
+    or 138, every run), so it runs in a subprocess: a regression fails this
+    test rather than killing the suite."""
+    script = f"""
+import threading
+from gexdash import instruments
+from gexdash.providers.mock import MockProvider
+from gexdash.store import ChainStore
+
+store = ChainStore({str(tmp_path / "fresh.db")!r})
+chain = MockProvider().get_chain(instruments.SPX, max_dte=7)
+
+def work(k):
+    for j in range(25):
+        store.save_breadth("NYSE", k, j, k - j)
+        store.save(chain, provider="mock")
+        assert store.load(instruments.SPX) is not None
+        store.breadth_history("NYSE")
+
+threads = [threading.Thread(target=work, args=(k,)) for k in range(8)]
+for t in threads: t.start()
+for t in threads: t.join()
+print("ok")
+"""
+    root = Path(__file__).resolve().parents[1]
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120,
+                       cwd=root, env={**os.environ, "PYTHONPATH": str(root)})
+    assert r.returncode == 0 and r.stdout.strip() == "ok", (r.returncode, r.stderr[-2000:])
 
 
 def test_cached_provider_serves_from_cache_but_streams_spot(tmp_path):

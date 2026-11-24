@@ -118,6 +118,7 @@ class Greeks:
             setattr(self, name, kw[name])
 
     def as_dict(self) -> dict[str, np.ndarray]:
+        """All nine arrays by attribute name, ``d1`` and ``d2`` included."""
         return {name: getattr(self, name) for name in self.__slots__}
 
 

@@ -14,11 +14,17 @@
   <div class="viewswitch" role="tablist" aria-label="Layout">
     <button id="view-terminal-btn" role="tab" data-view="terminal">▤ Terminal</button>
     <button id="view-columns-btn" role="tab" data-view="columns">▥ Columns</button>
+    <button id="view-chart-btn" role="tab" data-view="chart">▦ Chart</button>
   </div>
 
   <div class="clock">
-    <div class="k">Market time</div>
-    <div class="v"><span id="clock-time">—</span> <span class="et">ET</span></div>
+    <div class="k" id="clock-label">Market time</div>
+    <!-- The zone tag is the picker: every time on screen follows it. -->
+    <div class="v"><span id="clock-time">—</span>
+      <label class="tz-pick" title="Time zone for every time shown">
+        <span id="clock-tz" class="et">ET</span><span class="caret" aria-hidden="true">▾</span>
+        <select id="f-tz" aria-label="Time zone for every time shown"></select>
+      </label></div>
   </div>
   <div class="clock">
     <div class="k">Phase</div>
@@ -31,14 +37,14 @@
   <span class="badge warn" id="badge-synthetic" hidden>synthetic</span>
   <span class="badge" id="badge-live">paused</span>
 
-  <div class="field">
+  <div class="field ticker-field">
     <label for="f-symbol">Ticker</label>
     <select id="f-symbol" class="ticker"></select>
   </div>
   <button id="btn-theme" title="Toggle light / dark">◐</button>
 </header>
 
-<div class="strip">
+<div class="strip exposure-only">
   <span><b id="strip-range">—</b> active range</span>
   <span><b id="strip-strikes">—</b></span>
   <span><b id="strip-contracts">—</b> live contracts</span>
@@ -48,7 +54,7 @@
 </div>
 
 <!-- One filter row above everything it scopes, both views. -->
-<div class="filters">
+<div class="filters exposure-only">
   <div class="field">
     <label for="f-window">Expiry window</label>
     <select id="f-window">
@@ -79,7 +85,7 @@
   <div class="field"><label for="btn-table">View</label><button id="btn-table" aria-pressed="false">▤ table</button></div>
 </div>
 
-<div id="degraded" class="notice warn" role="status" hidden></div>
+<div id="degraded" class="notice warn exposure-only" role="status" hidden></div>
 <div id="notices"></div>
 
 <!-- ═══════════════════════════ TERMINAL VIEW ═══════════════════════════ -->
@@ -248,7 +254,41 @@
 
 </main>
 
-<div class="card" id="tableview-card" hidden>
+<!-- ═══════════════════════════ CHART VIEW ══════════════════════════════ -->
+<!-- Intraday/daily/weekly technical chart for QQQ, SPY, USO, ES and NQ. Independent of
+     the exposure payload and of the header ticker: drawn by technicals.js from
+     /api/technicals. -->
+<main id="view-chart" class="techview" hidden>
+  <section class="card tech-card">
+    <div class="tech-toolbar">
+      <div class="seg tech-symbols" id="tech-symbols" role="tablist" aria-label="Chart symbol"></div>
+      <label class="csel"><span>Range</span><select id="tech-range"></select></label>
+      <label class="csel"><span>Interval</span><select id="tech-interval"></select></label>
+      <button id="tech-session" class="tech-session" aria-pressed="false" hidden
+        title="Include pre- and post-market bars (ETFs; futures always show the full session)">Ext hours</button>
+      <button id="tech-adjust" class="tech-session" aria-pressed="true" hidden
+        title="Adjust for contract changes, as thinkorswim does: shift prices before each quarterly roll so the last close meets the first open after it">Adjust rolls</button>
+      <span class="grow"></span>
+      <div class="seg" id="tech-layers" role="group" aria-label="Chart layers"></div>
+      <div class="seg">
+        <button id="tech-zoom-out" title="Zoom out">−</button>
+        <button id="tech-zoom-in" title="Zoom in">+</button>
+        <button id="tech-zoom-reset" title="Fit all">⤢</button>
+      </div>
+    </div>
+    <div class="muted small" id="tech-note"></div>
+    <div class="tech-wrap">
+      <div id="tech-chart"></div>
+      <div id="tech-legend" class="tech-legend" aria-live="off"></div>
+    </div>
+    <details class="reading-caveats tech-rules-box">
+      <summary>How the signals are defined — gexdash rules, not the reference chart's script</summary>
+      <dl class="tech-rules" id="tech-rules"></dl>
+    </details>
+  </section>
+</main>
+
+<div class="card exposure-only" id="tableview-card" hidden>
   <h2>
     All strikes <span class="muted small" id="tableview-count"></span>
     <span class="grow"></span>
@@ -257,13 +297,16 @@
   <div class="tableview" id="tableview"></div>
 </div>
 
-<div class="card">
+<div class="card exposure-only">
   <h2>Model &amp; data provenance</h2>
   <div class="diag" id="diag"></div>
 </div>
 
 <div class="tooltip" id="tooltip"></div>
 
+<!-- technicals.js first: it only defines functions; app.js runs startup. -->
+<script src="/static/tz.js"></script>
+<script src="/static/technicals.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

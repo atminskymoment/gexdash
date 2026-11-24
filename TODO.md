@@ -40,11 +40,13 @@ Known bugs, most visible to traders first. Found during the code review of
   Where: `/api/breadth` in `gexdash/server.py` takes the breadth symbols from
   the instrument's family, not from the exchange queried.
 
-- [ ] **The optional `autologin` command needs a package `pyproject.toml`
+- [x] **The optional `autologin` command needs a package `pyproject.toml`
   doesn't list.** `oauth_loopback.py` imports `cryptography`. The `/connect`
   page and `python -m gexdash.providers.schwab login` don't need it.
-  Fix: add it to `dependencies`, or to an optional extra such as
-  `pip install -e ".[autologin]"`.
+  Fixed: it is the `autologin` extra (`pip install -e ".[autologin]"`), part
+  of `dev` and installed in CI. It had failed CI on a clean install, and
+  without it `autologin` now stops before opening the browser and says what
+  to install.
 
 - [ ] **In winter, synthetic 0DTE options expire an hour early.**
   `SETTLEMENT_HOUR_UTC = 20.0` in `gexdash/chain.py` is 16:00 ET only under

@@ -84,7 +84,9 @@ thinkorswim.
 The access token refreshes itself. The **refresh token lasts 7 days**, and
 Schwab offers no way around re-consenting. Two days before it expires, the
 dashboard shows a *Reconnect* notice; follow it and repeat steps 4 and 5.
-From a terminal, `python -m gexdash.providers.schwab login` does the same.
+From a terminal, `python -m gexdash.providers.schwab login` does the same
+([`autologin`](data-sources.md#schwab--free-and-the-recommended-start) skips
+the paste).
 
 **What works on Schwab:** exposure for SPX, SPY, NDX, QQQ and USO, and charts
 for all five chart symbols. Schwab's option-chain API refuses the ES and NQ

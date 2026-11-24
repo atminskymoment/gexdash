@@ -162,6 +162,15 @@ python -m gexdash.providers.schwab login    # paste the redirect URL
 export GEXDASH_PROVIDER=schwab
 ```
 
+Or skip the paste: `autologin` listens on the callback port and exchanges the
+code the moment Schwab redirects. Its local HTTPS listener needs a
+self-signed certificate, which needs the optional `cryptography` package:
+
+```bash
+pip install -e ".[autologin]"
+python -m gexdash.providers.schwab autologin
+```
+
 The access token lasts 30 minutes and refreshes automatically. **The refresh
 token lasts 7 days**, after which `login` must be re-run — Schwab provides no
 way around that re-consent. If credentials are missing the app falls back to

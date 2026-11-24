@@ -19,7 +19,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov"]
+# Only `python -m gexdash.providers.schwab autologin` needs it: the local HTTPS
+# listener generates a self-signed certificate. The /connect page and `login`
+# do not.
+autologin = ["cryptography>=41"]
+dev = ["pytest>=8", "pytest-cov", "gexdash[autologin]"]
 
 [project.urls]
 Homepage = "https://github.com/atminskymoment/gexdash"

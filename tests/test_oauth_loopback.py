@@ -8,6 +8,7 @@ milliseconds after Schwab issues the code.
 from __future__ import annotations
 
 import http.client
+import importlib.util
 import ssl
 import threading
 import time
@@ -15,6 +16,14 @@ import time
 import pytest
 
 from gexdash.oauth_loopback import CertPaths, can_bind, capture_code, ensure_self_signed_cert, port_for
+
+#: The listener presents a self-signed certificate, generated with the optional
+#: `cryptography` package (the `autologin` extra). Without it these tests skip
+#: rather than fail; CI installs it, so there they run.
+needs_cryptography = pytest.mark.skipif(
+    importlib.util.find_spec("cryptography") is None,
+    reason="needs the autologin extra: pip install -e '.[autologin]'",
+)
 
 
 @pytest.mark.parametrize("url,expected", [
@@ -33,6 +42,7 @@ def test_privileged_port_is_reported_not_attempted():
         assert "root" in why or "privileged" in why or "cannot bind" in why
 
 
+@needs_cryptography
 def test_cert_is_generated_once_and_key_is_private(tmp_path):
     paths = CertPaths(tmp_path)
     ensure_self_signed_cert(paths)
@@ -67,6 +77,7 @@ def _get(port, path, results, key):
             time.sleep(0.1)
 
 
+@needs_cryptography
 def test_captures_the_code_and_exchanges_it_in_the_handler(tmp_path):
     port = _free_port()
     seen, results = {}, {}
@@ -85,6 +96,7 @@ def test_captures_the_code_and_exchanges_it_in_the_handler(tmp_path):
     assert results["r"][0] == 200 and "Authorized" in results["r"][1]
 
 
+@needs_cryptography
 def test_a_failed_exchange_is_shown_on_the_page(tmp_path):
     port = _free_port()
     results = {}
@@ -97,6 +109,7 @@ def test_a_failed_exchange_is_shown_on_the_page(tmp_path):
     assert "Token exchange failed" in results["r"][1]
 
 
+@needs_cryptography
 def test_authorization_refusal_is_captured(tmp_path):
     port = _free_port()
     results = {}
@@ -107,6 +120,7 @@ def test_authorization_refusal_is_captured(tmp_path):
     assert "access_denied" in str(out["error"])
 
 
+@needs_cryptography
 def test_timeout_returns_rather_than_hanging(tmp_path):
     """Regression: HTTPServer.shutdown() blocks unless serve_forever() is
     running, and this server uses handle_request() — calling it hung the

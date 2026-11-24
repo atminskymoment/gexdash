@@ -22,7 +22,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,autologin]"
 
       - name: Test
         # GEXDASH_HOME is redirected so the suite never touches a real

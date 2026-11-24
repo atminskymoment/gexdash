@@ -27,6 +27,7 @@ provides no way around that re-consent.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import logging
 import os
@@ -837,6 +838,14 @@ def _autologin_cli(argv: list[str]) -> int:
     milliseconds after Schwab issues it rather than after a human round-trip.
     """
     from ..oauth_loopback import can_bind, capture_code, port_for
+
+    # Checked first: the listener's certificate needs it, and finding out after
+    # the browser has opened would waste a single-use authorization code.
+    if importlib.util.find_spec("cryptography") is None:
+        print("autologin needs the optional 'cryptography' package:", file=sys.stderr)
+        print("    pip install -e '.[autologin]'", file=sys.stderr)
+        print("Or connect without it: open /connect in the dashboard, or run `login`.", file=sys.stderr)
+        return 1
 
     auth = SchwabAuth()
     if not auth.configured:

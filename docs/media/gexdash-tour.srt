@@ -1,0 +1,161 @@
+1
+00:00:01,200 --> 00:00:06,219
+This is GEXDASH, an open-source dashboard for
+options traders. It estimates where
+
+2
+00:00:06,239 --> 00:00:10,651
+dealers have to hedge, and charts
+trend and signals beside it.
+
+3
+00:00:11,533 --> 00:00:17,058
+Step one: the Terminal view. One instrument
+through the session: net exposure across
+
+4
+00:00:17,078 --> 00:00:21,387
+the top, candles in the middle, and
+the strike profile beside them.
+
+5
+00:00:22,353 --> 00:00:28,202
+Step two: dealer levels. The call and
+put walls, the gamma flip, max
+
+6
+00:00:28,222 --> 00:00:31,706
+pain and the largest gamma strikes
+are drawn on the price chart.
+
+7
+00:00:32,007 --> 00:00:37,781
+Hover a candle, and the readout shows its
+open, high, low and close, with RSI and
+
+8
+00:00:37,801 --> 00:00:39,005
+its average.
+
+9
+00:00:39,945 --> 00:00:46,147
+Step three: exposure by strike.
+Gamma, delta, vanna, charm,
+
+10
+00:00:46,387 --> 00:00:51,212
+volume and open interest each have a tab,
+with the flip and spot marked.
+
+11
+00:00:51,560 --> 00:00:55,961
+Who holds which side is an assumption, not a
+measurement. It's a setting in the
+
+12
+00:00:55,981 --> 00:00:58,937
+header, and the screen says
+what it assumes.
+
+13
+00:00:59,877 --> 00:01:05,509
+Step four: the Columns view reads the
+whole surface at once. Market bias,
+
+14
+00:01:05,671 --> 00:01:09,955
+spot and levels, the level radar,
+and exposure by strike.
+
+15
+00:01:10,906 --> 00:01:16,351
+Step five: the Chart view,
+for QQQ, SPY, USO, ES
+
+16
+00:01:16,371 --> 00:01:20,913
+and NQ, from one-minute to weekly bars.
+
+17
+00:01:21,257 --> 00:01:27,109
+Smoothed averages from twenty to two hundred,
+EMA nine, two Bollinger bands, and a
+
+18
+00:01:27,129 --> 00:01:29,492
+volume profile over the range shown.
+
+19
+00:01:30,452 --> 00:01:36,494
+Step six: signals. Buy, add, trim and
+sell follow one position at a time.
+
+20
+00:01:36,643 --> 00:01:40,527
+Breakouts and breakdowns come from
+each consolidation base.
+
+21
+00:01:40,877 --> 00:01:45,720
+Every rule is written out below the chart, so
+any signal can be checked by hand.
+
+22
+00:01:46,655 --> 00:01:52,060
+Step seven: intraday. Five days of
+fifteen-minute bars, with session
+
+23
+00:01:52,080 --> 00:01:57,163
+dividers and Supertrend, ported line for
+line from its TradingView script.
+
+24
+00:01:57,506 --> 00:02:02,857
+Supertrend flipped to buy early on Monday,
+and its band trails below price.
+
+25
+00:02:02,993 --> 00:02:07,277
+ETFs show regular hours unless you
+add the extended sessions.
+
+26
+00:02:08,214 --> 00:02:13,356
+Step eight: futures. ES and NQ are
+adjusted for contract changes,
+
+27
+00:02:13,376 --> 00:02:18,961
+as thinkorswim does, so a quarterly
+roll doesn't print as a breakout.
+
+28
+00:02:19,303 --> 00:02:23,498
+Each roll is marked along the foot of the
+price chart, and one button switches the
+
+29
+00:02:23,518 --> 00:02:24,645
+adjustment off.
+
+30
+00:02:25,607 --> 00:02:31,434
+Step nine: time zone. Pick one beside the
+clock, and every time on screen follows
+
+31
+00:02:31,454 --> 00:02:35,764
+it, while sessions stay the
+exchange's. Here, Tokyo.
+
+32
+00:02:36,747 --> 00:02:42,045
+GEXDASH is open source under the MIT
+licence. Run it on synthetic data, connect
+
+33
+00:02:42,065 --> 00:02:48,294
+Schwab when you're ready, and remember: it's
+an analysis tool, not trading advice.
+

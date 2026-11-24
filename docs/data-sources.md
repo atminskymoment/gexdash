@@ -34,8 +34,59 @@ A provider that cannot serve bars raises `PriceHistoryUnavailable`, the
 endpoint returns `200` with a reason, and the UI renders that reason where the
 chart would be. Nothing else on the dashboard depends on it — the exposure
 surface never needed price history. Schwab implements it for the index and ETF
-symbols via `/marketdata/v1/pricehistory` and refuses the futures roots with
-the same unverified caveat as their chains.
+symbols via `/marketdata/v1/pricehistory`. The futures roots `/ES` and `/NQ`
+are requested too, and the response decides what happens. A feed error or an
+empty series is reported with the feed's reason. A series whose last price is
+outside the instrument's `plausible_spot` band is refused, because a root that
+resolves to another security (bare `ES` is Eversource Energy) would otherwise
+chart perfectly plausibly. A series that passes is served with
+`meta.unverified` set, and the UI shows that note.
+
+Checked against the live endpoint on 2026-11-23. `/ES` and `/NQ` return about
+ten years of daily bars and twenty of weekly, with no missing sessions. The
+series is the **front month, not back-adjusted**. It rolls on the Monday of
+expiry week, and each roll leaves an upward step equal to the calendar spread:
+0.5–1.5% of price in 2023–2026. Unadjusted, that skews the Chart view's rules.
+In five years of daily bars, about 230 signals across ES and NQ, four
+breakouts fell on a roll day with no SPY/QQQ breakout within three days
+(ES 2024-03-12, 2025-09-15; NQ 2023-09-11, 2026-06-15). USO's history is
+split-adjusted: its 1-for-8 reverse split in April 2020 leaves no step.
+
+**Adjusting for contract changes** (`futures.py`, on by default for ES and NQ
+on both charts; `adjust=false` turns it off). This follows thinkorswim's chart
+option of that name. Its manual defines it as adjusting "all price data prior
+to the active contract change so that the last close before the contract
+change is at the same level as the first open after it". The gap is
+therefore Friday's close to the Sunday-evening open, weekend move included,
+and it is removed additively, cumulatively from the newest roll back. The
+manual's wording also fits a ratio adjustment, and `back_adjust(method="ratio")`
+is one switch away.
+
+Where the rolls are was established against SPX and NDX, which have neither a
+roll nor a dividend (SPY and QQQ go ex-dividend in expiry week, which spoils
+them as a reference):
+
+- **December 2022 to September 2026:** every quarter, on both contracts, the
+  step falls on the Monday of expiry week (0.56–1.5%, well above day-to-day
+  noise of about 0.3%) and on no other day near expiry.
+- **Before mid-2022:** rates were near zero, and so was the step; no day
+  stands out. The same rule is applied there because it is the only evidence,
+  and the chart counts how many of the rolls it shows are from that period.
+- **Expired contracts can't settle it:** `/pricehistory` serves the live
+  contracts (`/ESZ26`, `/ESH27`) but returns empty for expired ones (`/ESU26`,
+  `/ESH22`).
+
+With the adjustment on, the roll-day steps against the index fall from about
++1% to a mean of +0.08%, the latest price is unchanged, and three of the four
+roll-day breakouts above disappear. The one left (ES 2025-09-15) sits on a
+roll that adjusted cleanly. Values to compare with thinkorswim's own chart,
+ES daily close:
+
+| Date | Unadjusted | Additive (default) | Ratio |
+|---|---|---|---|
+| 2025-11-24 | 6,725.00 | 6,942.50 | 6,931.59 |
+| 2023-11-27 | 4,561.50 | 5,221.00 | 5,088.59 |
+| 2021-11-26 (roll dates unverified) | 4,579.00 | 5,419.75 | 5,332.57 |
 
 #### What `/pricehistory` actually accepts
 
@@ -56,26 +107,39 @@ daily, weekly and monthly alike. Only `month` + `monthly` is rejected outright.
 
 | Bar size | Accepted `periodType` | Reach with explicit dates |
 |---|---|---|
-| 1 minute | `day` | **~48 days** — a hard cap of 12,870 candles |
+| 1 minute | `day` | **~48 days** |
 | 5 / 10 / 15 / 30 minute | `day` | **~260 days** |
 | daily | `month`, `year`, `ytd` | 10 years |
 | weekly | `month`, `year`, `ytd` | 20 years |
 | monthly | `year` **only** | 20 years |
 
 Measured against SPX, SPY, NDX and QQQ by requesting a 400-day window and
-reading back what arrived. The 1-minute figure is a **candle count**, not a
-date: all four symbols returned exactly 12,870 candles, which is 33 sessions ×
-390 RTH minutes. The coarser sizes all stopped on the same calendar date with
-counts from 13,746 down to 2,293, so theirs is a date horizon.
+reading back what arrived. For that window all four symbols returned exactly
+12,870 one-minute candles (33 sessions × 390 RTH minutes). That looked like a
+per-request candle cap, but it is not one: a 30-day window later returned
+29,112 candles ending at the current minute. The coarser sizes all stopped on
+the same calendar date with counts from 13,746 down to 2,293, so theirs is a
+date horizon.
 
 Two further consequences the code carries:
 
 - **`frequency` 60 and 240 are rejected.** Hourly, 2-hour and 4-hour bars are
   aggregated locally from 30-minute bars, the largest native size.
-- **Candle volume depends on the extended-hours flag.** Intraday requests set
-  `needExtendedHoursData=true`, which roughly triples the count: a 10-day
-  1-minute request returns 2,730 candles RTH-only and 12,760 with extended
-  hours. Any estimate of response size has to account for it.
+- **Candle volume depends on the extended-hours flag.** The terminal's
+  intraday requests set `needExtendedHoursData=true`, which roughly triples the
+  count: a 10-day 1-minute request returns 2,730 candles RTH-only and 12,760
+  with extended hours. Any estimate of response size has to account for it.
+  With the flag off, QQQ 5-minute bars run 09:30 to 15:55 ET (checked live on
+  2026-11-23); the Chart view uses that for ETFs, TradingView's default
+  session. With it on, QQQ starts at 07:00 ET.
+- **Without `endDate` the window ends at the previous session's close.** The
+  period form (`periodType=day&period=1`, no dates) on Monday 2026-11-23 at
+  13:40 ET returned Friday's session and nothing from Monday. Both charts now
+  send an explicit window ending now. For 1D/5D/10D the window covers N + 2
+  weekdays, and the server keeps the last N sessions present in the bars, so
+  before Monday's open 1D is still Friday. (Sending `endDate` with the period
+  form counts business days correctly for ETFs, but for `/ES` a 2-day period
+  returned only the current session, so it is not used.)
 
 There are **no sub-minute bars at any period**. One-second candles need a tick
 or streaming feed; the request is refused with that reason rather than
@@ -110,9 +174,9 @@ Schwab quirks handled in the client:
   greeks and open interest. Mapped to `None`, not treated as a value.
 - The `openInterest` field is the OCC prior-session figure by construction.
 
-### ⚠ Futures (ES, NQ) are unverified against Schwab
+### ⚠ Futures (ES, NQ) exposure does not work on Schwab
 
-**SPX, SPY, NDX and QQQ work end to end. ES and NQ do not yet, and you should
+**SPX, SPY, NDX, QQQ and USO work end to end. ES and NQ do not yet, and you should
 assume they need work.** The exposure maths for futures — Black-76, ×$50 / ×$20,
 futures price as the underlying — is implemented and tested, but only against
 the mock provider. Two reasons to expect the Schwab leg to fail:
@@ -125,6 +189,10 @@ the mock provider. Two reasons to expect the Schwab leg to fail:
 Requesting a futures chain prints a warning saying so. Verify with
 `SchwabProvider().get_chain(instruments.ES)` once authenticated. If it does
 not resolve, route the futures legs to a CME-carrying provider.
+
+**Status on 2026-11-23:** `/chains` answers `400 Check Param Values` for both
+`/ES` and `/NQ`, so the futures exposure legs do not work on Schwab. Their
+*price history* does (see *Optional: price history* above).
 
 ### Optional: market internals
 

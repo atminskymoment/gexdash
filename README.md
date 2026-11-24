@@ -1,21 +1,46 @@
-# gexdash
+# GEXDASH
 
-Dealer exposure dashboard for **SPX, SPY, ES, NDX, QQQ and NQ**.
+**Options dealer exposure and trend signals in one open-source dashboard.**
 
-Computes the exposure surface a once-daily open-interest snapshot can honestly
-support — GEX, DEX, VANX, CEX, VEX and THEX by strike, plus call/put walls, the
-gamma flip, max pain and volume POC — and re-prices all of it against live spot
-on every tick.
+GEXDASH estimates where options dealers have to hedge, for **SPX, SPY, ES, NDX,
+QQQ, NQ and USO**: GEX, DEX, VANX, CEX, VEX and THEX by strike, the call and
+put walls, the gamma flip, max pain and volume POC, re-priced against live spot
+on every tick. Beside it, a technical chart for **QQQ, SPY, USO, ES and NQ**
+draws averages, Bollinger bands, Supertrend, a volume profile and written-rule
+signals, from 1-minute to weekly bars. It runs on your own Schwab data, or on
+synthetic data with no account at all.
+
+![An 18-second preview of GEXDASH](docs/media/gexdash-tour.gif)
+
+**[Watch the narrated tour](docs/media/gexdash-tour.mp4)** (2:51, live data,
+[subtitles](docs/media/gexdash-tour.srt)) · **[How to use it](docs/how-to-use.md)**
+(install, connect Schwab, every screen explained)
+
+## Quick start
 
 ```bash
-pip install -e .
+git clone https://github.com/atminskymoment/gexdash.git
+cd gexdash
+pip install -e .                  # Python 3.11+
 python -m gexdash.server          # http://127.0.0.1:8420
 ```
 
 Runs immediately with a synthetic provider — no credentials, no market hours.
-The banner says `SYNTHETIC — NOT MARKET DATA` when it is not real.
+The banner says `SYNTHETIC — NOT MARKET DATA` when it is not real. For live
+data, [connect Schwab](docs/how-to-use.md#2-connect-schwab-for-live-data): it is
+free with a brokerage account.
 
-## Two layouts
+> **Not investment advice.** GEXDASH is an analysis tool built on stated
+> assumptions. The biggest of them, who holds which side of each option, is a
+> guess about positioning nobody publishes. [Why that matters](docs/methodology.md#4-the-dealer-sign-convention).
+
+## Three views
+
+| Terminal | Columns | Chart |
+|---|---|---|
+| [![Terminal view](docs/images/terminal.png)](docs/images/terminal.png) | [![Columns view](docs/images/columns.png)](docs/images/columns.png) | [![Chart view](docs/images/chart-daily.png)](docs/images/chart-daily.png) |
+
+*Screenshots use the synthetic provider, so the prices are invented.*
 
 Switch in the header, or link directly with `?view=`:
 
@@ -23,9 +48,12 @@ Switch in the header, or link directly with `?view=`:
 |---|---|---|
 | **Terminal** *(default)* | KPI strip, candlestick chart with GEX levels overlaid, tabbed exposure-by-strike, order flow & bias | Watching one instrument through the session |
 | **Columns** | Market bias / spot & levels / zone analysis / signal chart, four panels | Reading the whole exposure surface at once |
+| **Chart** | Full-width chart, 1-minute to weekly: SMMA 20/50/100/200, EMA 9, Bollinger 20/2 + 20/3, Supertrend, volume + volume profile, RSI, MACD, VAMS ribbons, ranges and signals | Reading trend and position for QQQ, SPY, USO, ES, NQ |
 
-Both render the same `/api/exposure` payload and share their chart
-primitives, so the two cannot disagree. The terminal view additionally uses
+Terminal and Columns render the same `/api/exposure` payload and share their
+chart primitives, so the two cannot disagree. Chart reads only
+`/api/technicals` and has its own symbol tabs, so it works for USO, and with no
+option chain loaded at all. The terminal view additionally uses
 `/api/history` for candles and `/api/breadth` for market internals. Both are
 **optional** capabilities: a provider that cannot serve them gets a stated
 reason where the panel would be, and everything else is unaffected.
@@ -60,6 +88,9 @@ placeholders with the reason — never as a plausible-looking number.
 | Candles 1m–monthly over 1 day–10 years, zoom/pan, crosshair, RSI+MA(20) · MACD · ADX/DI | computed; **sub-minute bars need a tick feed** and are refused with that reason |
 | Written reading — what the current GEX/DEX/vanna/charm and levels imply, together | computed by a fixed rule set; **withheld** when there is no open interest to read |
 | Top gainers / losers | needs per-constituent quotes for every index member — a separate feed |
+| Chart view: SMMA 20/50/100/200, EMA 9, Bollinger 20/2 + 20/3, RSI 14, MACD 12/26/9, volume profile + PoC, 3M/52W levels | computed over the feed's **full history** and then trimmed, so SMMA 200 is converged at the left edge |
+| Chart view: VAMS state, range breakouts, BUY / ADD / TRIM / SELL | **gexdash's own written rules**, shown under the chart. They are not the private script the reference chart uses |
+| Chart view: earnings (`E`) markers | not drawn: ETFs and index futures do not report earnings |
 
 ---
 
@@ -73,6 +104,7 @@ placeholders with the reason — never as a plausible-looking number.
 | `NDX` | Nasdaq-100 Index | ×100 | Black-Scholes | European |
 | `QQQ` | Invesco QQQ Trust | ×100 | Black-Scholes | **American** ¹ |
 | `NQ` | E-mini Nasdaq-100 future | ×$20 | Black-76 | **American** ² ³ |
+| `USO` | United States Oil Fund | ×100 | Black-Scholes | **American** ¹ |
 
 All American instruments keep European greeks and **disclose** it; the error is
 **measured, not assumed**, and it differs structurally between the two cases:
@@ -89,10 +121,14 @@ weeklies and EOM are European. The family is labelled by its quarterlies.
 Override per instrument without editing code:
 `GEXDASH_EXERCISE_OVERRIDES="NQ=european"`.
 
-³ **ES and NQ are unverified against Schwab.** The maths is implemented and
-tested, but only against the mock provider — `/ES` and `/NQ` are
-continuous-contract aliases and Schwab's chains endpoint documents equity and
-index options. See [data sources](docs/data-sources.md).
+³ **ES and NQ exposure does not work on Schwab.** The maths is implemented and
+tested, but only against the mock provider. Schwab's `/chains` answers `400`
+for `/ES` and `/NQ` (checked 2026-11-23). Their price history does load: a
+series whose last price fails the instrument's plausibility band is refused,
+because bare `ES` is Eversource Energy, and one that passes is drawn with an
+"unverified" note. It is the front month. Both charts adjust it for
+contract changes by default, as thinkorswim's option of that name does. See
+[data sources](docs/data-sources.md).
 
 ---
 
@@ -100,10 +136,12 @@ index options. See [data sources](docs/data-sources.md).
 
 | Document | Contents |
 |---|---|
+| [docs/how-to-use.md](docs/how-to-use.md) | **Start here.** Install, connect Schwab, and every screen explained with annotated screenshots |
 | [docs/api.md](docs/api.md) | HTTP endpoints, parameters, response schema, status codes |
 | [docs/methodology.md](docs/methodology.md) | Every formula and assumption: greeks, exposure units, sign conventions, flip methods, American approximation |
 | [docs/data-sources.md](docs/data-sources.md) | Providers, Schwab setup, OPRA fees, instrument reference |
 | [docs/architecture.md](docs/architecture.md) | Module map, design decisions, test strategy |
+| [TODO.md](TODO.md) | Known bugs not yet fixed, most visible first |
 
 Interactive OpenAPI docs are served at `/api/docs` when running.
 
@@ -203,6 +241,16 @@ checks pass in light and dark (worst adjacent CVD ΔE 21.6–26.8, target ≥ 8)
 Light is the default; dark is opt-in via the toggle, `?theme=dark`, or the OS
 setting.
 
+**Time zone.** Every time on screen follows the zone tag beside the header
+clock: the clock, intraday axis ticks, crosshair tags, legends, readouts and
+signal tooltips, in both the Terminal and Chart views. The tag is the picker.
+It offers New York (exchange time, the default), your machine's own zone, and
+the main market centres, and `?tz=Asia/Tokyo` links any IANA zone. Display
+only: sessions stay the exchange's, so 1h bars still start at 9:30 ET, and
+daily bars keep their session date in every zone. An intraday session label
+names its trading day, so in Tokyo a bar from Monday's US session reads
+Tuesday morning under a "Mon" divider.
+
 ### The price panel
 
 Ranges `1D`–`10Y` against intervals `1m`–`1Mo`, zoom and pan, and the dealer
@@ -237,6 +285,60 @@ Three details that are deliberate rather than incidental:
 The bottom-left readout follows the cursor with the hovered bar's OHLC and
 RSI, and falls back to the most recent bar when the pointer is away.
 
+### The Chart view
+
+A full-width chart for QQQ, SPY, USO, ES and NQ in 1-, 5-, 15- and 30-minute,
+hourly, 4-hour, daily or weekly bars, with
+`?view=chart&chart=USO&chart_range=2Y&chart_interval=1W` to link one. Each
+layer toggles: averages, EMA, both Bollinger bands, ranges, levels, profile,
+signals, Supertrend.
+
+Intraday follows TradingView's default sessions: ETFs in regular hours (the
+**Ext hours** button adds pre- and post-market), ES and NQ over the full
+electronic session. Hourly and 4-hour bars are anchored to the session open
+(9:30, 10:30 … ET for ETFs; 18:00, 22:00 … ET for futures), and 1D/5D/10D count
+sessions, so 1D on a Monday morning is Friday's session. Each bar size offers
+the ranges it can reach and draw: 1-minute up to 5 days, 4-hour up to 6
+months. Intraday history is shorter than daily, so each bar size fetches
+its longest range plus about 1,000 bars of warm-up. Where SMMA 200 still
+had too little history at the left edge (4-hour bars), the chart says so.
+The 3M/52W levels come from daily bars on every bar size. Intraday charts
+refresh every 30 seconds.
+
+ES and NQ are **adjusted for contract changes** by default, as thinkorswim's
+option of that name does. Before each quarterly roll (the Monday of expiry
+week), prices are shifted so the last close meets the first open after it.
+**Adjust rolls** turns it off, and a small `roll` mark sits at the bottom of
+the price pane at each change. The roll date is verified against the index
+from December 2022. Before that the step was too small to locate, and the
+note counts how many of the rolls shown fall in that period. The legend and every pane title follow the cursor; the legend has a
+strip of its own above the plot, so it never covers a candle. The wheel zooms
+over the price pane only, so the page still scrolls over the panes below it.
+Signal markers that would collide move up to two slots away from their bar,
+with a dotted leader back to it. Where even that is crowded, as on a 5-year
+daily chart, a marker drops its label and the label moves to its tooltip.
+
+Indicators are standard and computed exactly. SMMA is Wilder smoothing, not an
+SMA or EMA of the same length, and Bollinger uses the population standard
+deviation, as Bollinger defined it. The sample form widens a 20-bar band by
+about 2.6%. The signal layer is a set of stated rules:
+
+| Mark | Rule |
+|---|---|
+| VAMS check | close vs SMMA 20 ± 0.5 × ATR 14: above → bullish, below → bearish, between → no call |
+| VAMS state | latches the last call; decays to neutral after 5 no-call bars. `VAMS→Bullish`/`→Bearish` are the current triggers |
+| Range / Breakout / Breakdown | prior 20-bar high/low; a base when its span ≤ 5 × ATR; a close outside a base is a break |
+| BUY | from flat: VAMS bullish, close above SMMA 50 and SMMA 200 |
+| ADD | while long: low tests SMMA 50 and the close holds above it; ≥ 10 bars apart |
+| TRIM | while long: RSI 14 crosses back down through 70; ≥ 10 bars apart |
+| SELL | while long: VAMS bearish and close below SMMA 50 |
+| Supertrend Buy / Sell | **not a gexdash rule**: a line-for-line port of TradingView's "Supertrend" v4 script (ATR 10, multiplier 3, Wilder ATR). Bands at hl2 ∓ 3 × ATR, ratcheting while the previous close holds them; the trend flips when the close crosses the *previous* bar's opposite band |
+
+`/api/technicals?st_period=…&st_mult=…` matches non-default Supertrend inputs.
+All of these thresholds are in `technicals.TechParams` and are echoed in the
+payload. If you have the source of the script you are replicating, replace the
+rules there. Nothing else depends on them.
+
 ---
 
 ## Layout
@@ -245,7 +347,9 @@ RSI, and falls back to the most recent bar when the pointer is away.
 gexdash/
   bars.py         intraday OHLCV + VWAP for the terminal view's price panel
   history.py      chart range/interval vocabulary, provider mapping, aggregation
-  indicators.py   RSI, MACD, ADX/DI -- Wilder smoothing where Wilder specified it
+  indicators.py   RSI, MACD, ADX/DI, SMMA, Bollinger, ATR, Supertrend -- Wilder where Wilder specified it
+  technicals.py   Chart view: overlays, profile, levels, VAMS + signal rules, sessions, warm-up
+  futures.py      contract-change roll dates and back-adjustment (thinkorswim's definition)
   breadth.py      exchange market internals from the $ADVN/$DECN symbol family
   greeks.py       vectorized Black-Scholes; Black-76 via the q = r identity
   american.py     CRR binomial — bounds the SPY/QQQ approximation error
@@ -258,9 +362,12 @@ gexdash/
   crosscheck.py   diff our greeks against the provider's
   server.py       FastAPI + SSE
   providers/      mock (synthetic) and schwab
-  static/         dashboard — no build step, no CDN, no chart library
-docs/             api · methodology · data-sources · architecture
+  static/         dashboard + technicals.js + tz.js — no build step, no CDN, no chart library
+docs/             how-to-use · api · methodology · data-sources · architecture
+  images/         the guide's screenshots (synthetic data)
+  media/          the narrated tour (MP4 + subtitles) and the README preview GIF
 tests/            greeks · american · exposure · instruments · providers · crosscheck · server
+                  · history · bars · technicals · futures · breadth · tz · ...
 ```
 
 A ~2000-contract chain re-prices in well under a millisecond. A full
@@ -273,7 +380,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 397 tests, ~10s
+python -m pytest tests/ -q      # 487 tests, ~13s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76

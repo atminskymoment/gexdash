@@ -11,6 +11,7 @@ Base URL: `http://127.0.0.1:8420`. Interactive OpenAPI docs are served at
 | `GET` | `/api/stream` | SSE — the surface re-priced on each spot tick |
 | `GET` | `/api/history` | Intraday OHLCV bars + VWAP (optional capability) |
 | `GET` | `/api/breadth` | Exchange market internals + session A/D line (optional) |
+| `GET` | `/api/technicals` | Chart view, 1m to weekly: averages, bands, Supertrend, profile, VAMS, signals (optional) |
 | `POST` | `/api/refresh` | Force a chain pull, bypassing the cache |
 | `GET` | `/api/meta` | Instruments, families, valid parameter values, session |
 | `GET` | `/api/docs` | OpenAPI / Swagger UI |
@@ -21,7 +22,7 @@ Accepted by `/api/exposure` and `/api/stream`.
 
 | Parameter | Type | Default | Values |
 |---|---|---|---|
-| `symbol` | string | `SPX` | `SPX` `SPY` `ES` `NDX` `QQQ` `NQ` |
+| `symbol` | string | `SPX` | `SPX` `SPY` `ES` `NDX` `QQQ` `NQ` `USO` |
 | `expiry_window` | string | `30dte` | `0dte` `7dte` `30dte` `60dte` `all` |
 | `dealer_sign` | string | `long_calls_short_puts` | `long_calls_short_puts` `short_calls_long_puts` `all_long` |
 | `flip_method` | string | `spot_solve` | `spot_solve` `cumulative` |
@@ -173,8 +174,11 @@ the back-off.
 | `200` | OK |
 | `400` | Invalid `expiry_window` |
 | `404` | Unknown `symbol` |
-| `422` | No live contracts in the window (e.g. `0dte` after settlement) |
+| `422` | No live contracts in the window (e.g. `0dte` after settlement), or an unknown `dealer_sign` |
 | `502` | Provider failed *and* no cached chain was available to fall back on |
+
+A network failure on the way to the provider (a timeout, a refused connection)
+currently surfaces as `500` rather than `502`. A cached chain still covers it.
 
 ## `GET /api/stream`
 
@@ -228,6 +232,7 @@ curl "http://127.0.0.1:8420/api/history?symbol=SPX&range=3M&interval=1D"
 | `range` | `1D` | `1D` `5D` `10D` `1M` `3M` `6M` `YTD` `1Y` `2Y` `5Y` `10Y` |
 | `interval` | `1m` | `1m` `5m` `10m` `15m` `30m` `1h` `2h` `4h` `1D` `1W` `1Mo` |
 | `indicators` | `true` | include RSI + MA(20), MACD and ADX/DI |
+| `adjust` | `true` | ES/NQ: adjust for contract changes, as on the Chart view |
 | `interval_minutes` | *unset* | **deprecated** legacy form, still honoured |
 | `lookback_hours` | *unset* | **deprecated** legacy form, still honoured |
 
@@ -266,10 +271,12 @@ adjustment is reported in `plan.notes` — never applied quietly.
 
 Requests are bounded by `startDate`/`endDate`, so **the range asked for is the
 range served** — there is no period bucket left to round up to, and nothing is
-over-fetched and trimmed. `window` is null only for short intraday ranges,
-which keep the `period` form: `periodType=day` counts *sessions*, so a `1D`
-chart still returns the last real session before Monday's open, where a clock
-window ending now would start after Friday's close and come back empty.
+over-fetched and trimmed. Short intraday ranges (`1D`, `5D`, `10D`) count
+*sessions*, so their window covers the last N + 2 weekdays up to now,
+starting at 18:00 ET the evening before the first of them, and the server
+keeps the last N sessions it finds (`plan.sessions`). A `1D` chart before Monday's open is therefore
+Friday's session, and one during Monday's session is Monday's so far. The
+`period` form would have ended at the previous session's close.
 
 `interval_served` differs from `interval_requested` when the bar size gives
 way, always with the reason in `notes`. Two independent limits cause that:
@@ -293,13 +300,125 @@ to a minute.
 
 ```jsonc
 {"available": false, "symbol": "ES",
- "reason": "price history for /ES is unverified against Schwab — ..."}
+ "reason": "/ES price history ends at 71.40, outside the plausible band 1,000-50,000 ..."}
 ```
+
+Futures roots (`/ES`, `/NQ`) are requested rather than refused up front. A
+series whose last price falls outside the instrument's plausible band is
+refused as above (bare `ES` on Schwab is Eversource Energy), and one that passes
+carries `meta.unverified`, because Schwab does not document these
+continuous-contract aliases. They are front-month series. Both chart
+endpoints adjust them for contract changes by default, as thinkorswim's chart
+option does: prices before each quarterly roll are shifted so the last close
+meets the first open after it. `adjust=false` returns the raw series, where
+each roll is a step of about 1%. Both answer with `adjusted` and `rolls`
+(`index`/`i`, `date`, `gap`, `verified`); see
+[data sources](data-sources.md).
 
 The dashboard is fully usable without bars: the exposure surface does not need
 them, so the UI renders the reason where the chart would go rather than an
 empty plot that reads as a loading state. `404` is still returned for an
 unknown `symbol`.
+
+## `GET /api/technicals`
+
+The Chart view's data: intraday, daily or weekly bars with every overlay,
+level and signal already computed.
+
+```bash
+curl "http://127.0.0.1:8420/api/technicals?symbol=QQQ&range=1Y&interval=1D"
+```
+
+| Parameter | Default | Values |
+|---|---|---|
+| `symbol` | `QQQ` | any instrument; the view offers `QQQ` `SPY` `USO` `ES` `NQ` |
+| `range` | `1Y` | per interval, from `caps`: `1D` `5D` `10D` (sessions), `1M` `3M` `6M` `YTD` `1Y` `2Y` `5Y` |
+| `interval` | `1D` | `1m` `5m` `15m` `30m` `1h` `4h` `1D` `1W` |
+| `session` | `auto` | intraday only: `rth` (the ETF default) or `eth`. ES and NQ are always full-session |
+| `st_period` | `10` | Supertrend ATR period |
+| `st_mult` | `3.0` | Supertrend ATR multiplier |
+| `adjust` | `true` | ES/NQ: adjust for contract changes (thinkorswim's option). Ignored for ETFs |
+
+Each interval offers its own ranges (`caps.intervals[].ranges`): 1-minute
+offers 1D and 5D, 4-hour offers 1M to 6M, daily offers 3M to 5Y. A range the
+interval does not offer is replaced by its `default_range`, with a note.
+Unknown keys are a `400`.
+
+**Warm-up.** Daily and weekly ask for everything the provider serves (10 years
+daily, 20 years weekly). Intraday asks for the interval's longest range plus
+about 1,000 bars, within the feed's reach (11 days for 1-minute, enough for 5D
+plus the warm-up; about 250 days otherwise). Indicators are computed over all
+of it, then trimmed to `range`. SMMA 200 is Wilder smoothing, whose seed still
+weighs 13% after 400 bars, so computed over only the visible window its left
+edge would be wrong. Where warm-up is still short (4-hour bars), `notes` says
+so. The fetch is cached server-side per symbol, native bar size and session:
+60 s for daily and weekly, 25 s intraday. Every range of an interval shares
+one fetch, and 30m/1h/4h share their 30-minute bars.
+
+**Sessions.** Intraday windows always end now. Without an `endDate` the feed
+ends at the previous session's close. Hourly and 4-hour bars are built from
+30-minute bars anchored to the session open: 9:30 ET for regular hours, 4:00
+for extended hours, 18:00 for futures. 1D/5D/10D count sessions by their
+exchange date (a futures session opening Sunday 18:00 is Monday's). The
+3M/52W levels are always measured on daily bars.
+
+### Response
+
+```jsonc
+{
+  "available": true, "symbol": "QQQ", "label": "Invesco QQQ Trust",
+  "range": "1Y", "interval": "1D", "synthetic": false, "provider": "schwab",
+  "session": null,                         // intraday: "rth" | "eth" | "futures"
+  "session_breaks": [], "session_labels": [],  // intraday: first bar of each session, its date
+  "time": ["2025-11-24T06:00:00", ...], "open": [...], "high": [...],
+  "low": [...], "close": [...], "volume": [...],
+  "prev_close": 588.1,                     // close before the first bar shown
+  "series": {                              // aligned with the bars; null = no value yet
+    "smma20": [...], "smma50": [...], "smma100": [...], "smma200": [...],
+    "ema9": [...], "bb_basis": [...],
+    "bb20_2_upper": [...], "bb20_2_lower": [...],
+    "bb20_3_upper": [...], "bb20_3_lower": [...],
+    "atr": [...], "rsi": [...],
+    "macd": [...], "macd_signal": [...], "macd_histogram": [...],
+    "vams_upper": [...], "vams_lower": [...],
+    "st_up": [...], "st_dn": [...]         // Supertrend: the active band only, null otherwise
+  },
+  "supertrend": {"trend": "down", "line": 685.83,
+                 "signals": [{"i": 40, "type": "ST_BUY", "price": 605.97}, ...]},
+  //   priced at the band, as the script draws them
+  "vams": {
+    "check": [1, 0, -1, ...],              // per bar: bullish / no call / bearish
+    "state": [1, 1, 0, ...],               // latched, decays to 0 (neutral)
+    "current": {"state": "neutral", "check": "neutral",   // the chart labels it "no call"
+                "to_bullish": 533.57, "to_bearish": 515.09}
+  },
+  "signals": [{"i": 212, "type": "BUY", "price": 523.4}, ...],
+  //   type: BUY ADD TRIM SELL BREAKOUT BREAKDOWN; i indexes the arrays above
+  "ranges": [{"start": 180, "end": 200, "high": 585.3, "low": 541.0,
+              "outcome": "breakout"}],
+  "current_range": {"start": 345, "end": 364, "high": 585.3, "low": 404.4,
+                    "is_base": false},
+  "position": "flat",
+  "profile": {"edges": [...49], "up": [...48], "down": [...48], "poc": 217.75},
+  "levels": [{"key": "high_3m_52w", "label": "3M/52W high", "price": 649.42,
+              "partial": false}, ...],
+  "warmup": {"bars_before_window": 2151, "bars_total": 2516, "notes": []},
+  "notes": [],                              // anything the reader must know
+  "params": {...},                          // every threshold, see TechParams
+  "rules": [{"key": "buy", "name": "BUY", "text": "From flat: ..."}, ...],
+  "plan": {...},
+  "caps": {...}                             // intervals with their ranges; sessions
+}
+```
+
+**`rules` are gexdash's own.** The chart this view is modelled on draws VAMS,
+BUY/ADD/TRIM/SELL and breakout labels from a private script. These are
+stand-in definitions, written out in `rules` and shown under the chart. They
+are not a reconstruction of that script. Change the thresholds in
+`technicals.TechParams`.
+
+Unavailable history is a `200` with `available: false` and a `reason`, as for
+`/api/history`.
 
 ## `GET /api/breadth`
 
@@ -350,21 +469,31 @@ plausible numbers.
 **Unavailability is a `200`:**
 
 ```jsonc
-{"available": false, "exchange": "NYSE",
- "reason": "the mock provider does not supply market internals"}
+{"available": false, "exchange": "NASDAQ",
+ "reason": "no breadth symbols defined for 'NASDAQ'"}
 ```
 
 ## Browser URL parameters
 
-The dashboard accepts `?symbol=`, `?view=` and `?theme=`, so a specific screen
-is linkable:
+Every screen is linkable:
 
 ```
-http://127.0.0.1:8420/?symbol=QQQ&view=terminal&theme=dark
+http://127.0.0.1:8420/?symbol=QQQ&view=terminal&theme=dark&tz=Europe/London
+http://127.0.0.1:8420/?view=chart&chart=ES&chart_range=2Y&chart_interval=1D&chart_adjust=off
 ```
 
 | Parameter | Values | Resolution order |
 |---|---|---|
 | `symbol` | any instrument key | URL → `SPX` |
-| `view` | `terminal` `columns` | URL → stored preference → `terminal` |
+| `view` | `terminal` `columns` `chart` | URL → stored preference → `terminal` (a URL value is also stored) |
 | `theme` | `light` `dark` | URL → stored preference → OS `prefers-color-scheme` |
+| `tz` | `exchange`, `local`, or any IANA zone | URL → stored preference → `exchange` (New York) |
+| `chart` | `QQQ` `SPY` `USO` `ES` `NQ` | URL → stored preference → `QQQ` |
+| `chart_range` | a range the bar size offers, e.g. `5D` `1Y` | URL → stored preference → `1Y` |
+| `chart_interval` | `1m` `5m` `15m` `30m` `1h` `4h` `1D` `1W` | URL → stored preference → `1D` |
+| `chart_session` | `rth` `eth` (ETFs) | URL → stored preference → `rth` |
+| `chart_adjust` | `on` `off` (ES, NQ) | URL → stored preference → `on` |
+
+Apart from `view`, a value in the URL applies to that page and is not stored;
+choosing in the page stores it. `tz` is display only: nothing sent to the
+server depends on it.

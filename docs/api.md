@@ -14,6 +14,7 @@ Base URL: `http://127.0.0.1:8420`. Interactive OpenAPI docs are served at
 | `GET` | `/api/technicals` | Chart view, 1m to weekly: averages, bands, Supertrend, profile, VAMS, signals (optional) |
 | `POST` | `/api/refresh` | Force a chain pull, bypassing the cache |
 | `GET` | `/api/meta` | Instruments, families, valid parameter values, session |
+| `GET` | `/api/symbol` | What a typed ticker resolves to: registered or generic specs, and whether exposure is available |
 | `GET` | `/api/docs` | OpenAPI / Swagger UI |
 
 ## Shared query parameters
@@ -22,7 +23,7 @@ Accepted by `/api/exposure` and `/api/stream`.
 
 | Parameter | Type | Default | Values |
 |---|---|---|---|
-| `symbol` | string | `SPX` | `SPX` `SPY` `ES` `NDX` `QQQ` `NQ` `USO` |
+| `symbol` | string | `SPX` | any symbol: the seven registered ones carry verified specs, aliases such as `/ES` or `$SPX` resolve to them, and anything else well-formed gets generic specs ([`/api/symbol`](#get-apisymbol)) |
 | `expiry_window` | string | `30dte` | `0dte` `7dte` `30dte` `60dte` `all` |
 | `dealer_sign` | string | `long_calls_short_puts` | `long_calls_short_puts` `short_calls_long_puts` `all_long` |
 | `flip_method` | string | `spot_solve` | `spot_solve` `cumulative` |
@@ -173,7 +174,8 @@ the back-off.
 |---|---|
 | `200` | OK |
 | `400` | Invalid `expiry_window` |
-| `404` | Unknown `symbol` |
+| `404` | Malformed `symbol` (not letters first, then letters, digits or dots, with `$` or `/` allowed in front) |
+| `422` | A typed future such as `/CL`: exposure needs its multiplier, which is unknown. Also from `/api/stream`, before it opens, and `/api/refresh` |
 | `422` | No live contracts in the window (e.g. `0dte` after settlement), or an unknown `dealer_sign` |
 | `502` | Provider failed *and* no cached chain was available to fall back on |
 
@@ -476,6 +478,36 @@ payload is unaffected. Intraday charts get the lines and events at their bar
 times and no `future` slots, with a note saying so. Exchange holidays are not
 modelled in future dates.
 
+## `GET /api/symbol`
+
+What a typed symbol resolves to, before anything is fetched for it. Every
+endpoint taking `symbol` resolves it the same way.
+
+```bash
+curl "http://127.0.0.1:8420/api/symbol?symbol=/CL"
+```
+
+```jsonc
+{"symbol": "/CL", "label": "/CL (future; generic specs)", "registered": false, "generic": true,
+ "model": "future", "multiplier": null, "exercise_style": "american", "future": true,
+ "quarterly_rolls": false,
+ "exposure": {"available": false, "reason": "exposure needs the contract multiplier, ..."}}
+```
+
+| Typed | Resolves to |
+|---|---|
+| `SPX`, `spx`, `$SPX`; `ES`, `/ES` | the registered, verified spec (`registered: true`) |
+| `AAPL`, `BRK.B` | equity or ETF: ×100, Black-Scholes, American, dividend 0 unless `div` is passed |
+| `$RUT` | cash index: ×100, Black-Scholes, European |
+| `/CL` | future: bars only, no roll adjustment (`quarterly_rolls` is true only for ES and NQ), exposure refused |
+
+The exposure payload's `instrument_meta` carries `generic`, and `strike_step`
+is `null` for a typed symbol, whose strikes come from its chain. Whether the
+provider has the symbol at all is the data endpoints' answer: a ticker Schwab
+does not know comes back as their usual unavailable reason. A malformed symbol
+is a `404` with what a symbol may look like. The `/api/technicals` payload says
+what it drew with `future`, `quarterly_rolls` and `generic`.
+
 ## `GET /api/breadth`
 
 Exchange advance/decline internals for the instrument's family — S&P 500
@@ -540,11 +572,11 @@ http://127.0.0.1:8420/?view=chart&chart=ES&chart_range=2Y&chart_interval=1D&char
 
 | Parameter | Values | Resolution order |
 |---|---|---|
-| `symbol` | any instrument key | URL → `SPX` |
+| `symbol` | any symbol, as `/api/symbol` reads it | URL → `SPX` |
 | `view` | `terminal` `columns` `chart` | URL → stored preference → `terminal` (a URL value is also stored) |
 | `theme` | `light` `dark` | URL → stored preference → OS `prefers-color-scheme` |
 | `tz` | `exchange`, `local`, or any IANA zone | URL → stored preference → `exchange` (New York) |
-| `chart` | `QQQ` `SPY` `USO` `ES` `NQ` | URL → stored preference → `QQQ` |
+| `chart` | any symbol; `QQQ` `SPY` `USO` `ES` `NQ` have tabs | URL → stored preference → `QQQ` |
 | `chart_range` | a range the bar size offers, e.g. `5D` `1Y` | URL → stored preference → `1Y` |
 | `chart_interval` | `1m` `5m` `15m` `30m` `1h` `4h` `1D` `1W` | URL → stored preference → `1D` |
 | `chart_session` | `rth` `eth` (ETFs) | URL → stored preference → `rth` |

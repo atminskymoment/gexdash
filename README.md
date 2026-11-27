@@ -50,6 +50,21 @@ Switch in the header, or link directly with `?view=`:
 | **Columns** | Market bias / spot & levels / zone analysis / signal chart, four panels | Reading the whole exposure surface at once |
 | **Chart** | Full-width chart, 1-minute to weekly: SMMA 20/50/100/200, EMA 9, Bollinger 20/2 + 20/3, Supertrend, volume + volume profile, RSI, MACD, VAMS ribbons, ranges and signals | Reading trend and position for QQQ, SPY, USO, ES, NQ |
 
+**Any ticker.** Type a symbol into the header's Ticker box or the Chart view's
+symbol box: `AAPL`, `BRK.B`, `$RUT`, `/CL`. The seven above carry verified
+specs. Anything else is priced on stated generic ones: an equity or ETF at
+×100, American exercise, no dividend unless `div` is passed; a `$` cash index
+European. A typed future such as `/CL` gets charts, unadjusted for rolls, but
+no exposure: its contract multiplier is unknown, and a guessed one would be a
+pure scale error. See [data sources](docs/data-sources.md#typed-symbols).
+
+**Drawing.** Both price charts carry a drawing toolbar on the left. Drawings
+are stored by time and price per symbol in this browser, shared between the
+two charts, and survive zoom, refresh and changes of view or bar size. A
+point outside the loaded bars is placed by the calendar (weekdays, holidays
+not modelled; intraday by the bar size, with no session calendar), so there
+it is approximate. See [below](#drawing-tools).
+
 Both price charts, Terminal and Chart, also take a **Moon/Sun** toggle: the
 lunar-solar cycle with its 1st and 2nd derivatives, drawn past the last bar
 into future dates, a dotted projected path with its highs and lows labelled,
@@ -348,6 +363,32 @@ All of these thresholds are in `technicals.TechParams` and are echoed in the
 payload. If you have the source of the script you are replicating, replace the
 rules there. Nothing else depends on them.
 
+### Drawing tools
+
+The toolbar to the left of both price charts:
+
+| Group | Tools |
+|---|---|
+| Cursors | Cross, Dot, Arrow (crosshair lines hidden), Eraser |
+| Lines, channels, pitchforks | Trend line, Ray, Extended line, Info line, Horizontal line and ray, Vertical line, Cross line, Parallel channel, Regression trend (±2σ), Pitchfork, Schiff and Modified Schiff pitchforks |
+| Fibonacci and Gann | Fib retracement, Trend-based fib extension, Fib channel, Fib time zone, Fib speed resistance fan, Fib circles, Gann box, Gann square, Gann fan |
+| Patterns, Elliott waves, cycles | XABCD and ABCD (with their ratios), Triangle pattern, Head and shoulders, Elliott impulse (1-5), correction (A-B-C), triangle (A-E), double (W-X-Y) and triple (W-X-Y-X-Z) combos, Cyclic lines, Time cycles, Sine line |
+| Forecasting, volume, measures | Long and Short position (reward, risk, R/R), Forecast, Anchored VWAP, Fixed range volume profile (POC, 70% value area), Price range, Date range, Date and price range |
+| Brushes, arrows, shapes | Brush, Highlighter, Arrow, Arrow marks up and down, Rectangle, Circle, Ellipse, Triangle, Path, Curve |
+| Then | Magnet (snap to the bar's open, high, low or close), **Lock all**, **Hide all**, Remove (the selected drawing, or all of the symbol's with a second click) |
+
+Click to place each point; a press, drag and release places two at once. The
+Path tool finishes on a double-click or Enter. After placing a drawing the
+pointer returns to the cursor you last chose. Click a drawing to select it,
+drag a point or the body to move it, and press Delete to remove it; Escape
+cancels or deselects. Points snap to bars; past the last bar they snap to
+future dates on the same rule as the Moon/Sun layer, so a drawing there
+lands on the same date with that layer on or off. Every measure a drawing
+shows (Fibonacci prices, pitchfork medians, Gann slopes, the regression
+channel, VWAP, volume profile, reward and risk) is computed in
+`static/draw.js` and tested under Node. Definitions that differ between
+platforms are in each tool's tooltip and in [how to use](docs/how-to-use.md#7-drawing-on-the-charts).
+
 ### The lunar-solar cycle
 
 **Moon/Sun** is a toggle on both price charts. It is off by default and
@@ -408,12 +449,12 @@ gexdash/
   crosscheck.py   diff our greeks against the provider's
   server.py       FastAPI + SSE
   providers/      mock (synthetic) and schwab
-  static/         dashboard + technicals.js + astro.js + tz.js — no build step, no CDN, no chart library
+  static/         dashboard + technicals.js + astro.js + draw.js + tz.js — no build step, no CDN, no chart library
 docs/             how-to-use · api · methodology · data-sources · architecture
   images/         the guide's screenshots (synthetic data)
   media/          the narrated tour (MP4 + subtitles) and the README preview GIF
 tests/            greeks · american · exposure · instruments · providers · crosscheck · server
-                  · history · bars · technicals · futures · breadth · tz · astro · cycles · ...
+                  · history · bars · technicals · futures · breadth · tz · astro · cycles · symbols · draw · ...
 ```
 
 A ~2000-contract chain re-prices in well under a millisecond. A full
@@ -426,7 +467,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 535 tests, ~14s
+python -m pytest tests/ -q      # 574 tests, ~16s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76

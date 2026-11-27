@@ -88,6 +88,10 @@
   --astro-d1: #2a78d6;
   --astro-d2: #1baf7a;
 
+  /* Drawings: one ink, the theme's own blue, so they read as annotation
+     over any series. Multi-level tools add the series tokens, labelled. */
+  --draw-ink: var(--series-call);
+
   /* status — reserved, never used as a series */
   --good: #0ca30c;
   --warning: #fab219;
@@ -236,7 +240,7 @@ header.top {
 .badge.warn { color: var(--serious); border-color: color-mix(in srgb, var(--serious) 50%, transparent); }
 .badge.live { color: var(--good); border-color: color-mix(in srgb, var(--good) 50%, transparent); }
 
-select.ticker { font-weight: 650; min-width: 132px; }
+select.ticker, input.ticker { font-weight: 650; min-width: 132px; }
 
 /* -------------------------------------------------------------- strip/filters */
 
@@ -256,13 +260,13 @@ select.ticker { font-weight: 650; min-width: 132px; }
 .field { display: flex; flex-direction: column; gap: 3px; }
 .field label { font-size: 9px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted); }
 
-select, button {
+select, button, input.ticker {
   font-family: var(--font); font-size: 12.5px; color: var(--text-primary);
   background: var(--page); border: 1px solid var(--border);
   border-radius: 7px; padding: 5px 9px; min-height: 30px; cursor: pointer;
 }
-select:hover, button:hover { border-color: var(--text-muted); }
-select:focus-visible, button:focus-visible { outline: 2px solid var(--series-call); outline-offset: 1px; }
+select:hover, button:hover, input.ticker:hover { border-color: var(--text-muted); }
+select:focus-visible, button:focus-visible, input.ticker:focus-visible { outline: 2px solid var(--series-call); outline-offset: 1px; }
 
 /* ------------------------------------------------------------------ layout */
 
@@ -875,3 +879,95 @@ body[data-view="chart"] .ticker-field { display: none !important; }
 .astro-ev text { font-size: 10px; fill: var(--text-secondary); }
 .astro-ev.minor text { font-size: 8.5px; fill: var(--text-muted); }
 .astro-ev line { stroke: var(--text-muted); stroke-opacity: 0.35; stroke-width: 1; stroke-dasharray: 1 3; }
+
+/* ---- typed symbols ---- */
+input.ticker { width: 9.5em; text-transform: uppercase; cursor: text; }
+input.ticker::placeholder { text-transform: none; font-weight: 500; color: var(--text-muted); }
+.tech-symbol-input {
+  width: 6.5em; min-height: 26px; padding: 2px 7px; font: inherit; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; color: var(--text-primary); background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.tech-symbol-input.active { border-color: var(--series-call); box-shadow: 0 0 0 1px var(--series-call) inset; }
+.tech-symbol-input::placeholder { text-transform: none; color: var(--text-muted); font-weight: 500; }
+.nodata.compact { min-height: 0; padding: 14px 10px; grid-column: 1 / -1; }
+
+/* ---- drawing tools (draw.js) ---------------------------------------- */
+.draw-frame { display: flex; gap: 6px; align-items: stretch; }
+.draw-frame > .draw-area { flex: 1; min-width: 0; }
+.draw-bar { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; flex: 0 0 auto; position: relative; z-index: 6; }
+.draw-btn {
+  width: 30px; height: 30px; min-height: 0; padding: 0; display: grid; place-items: center;
+  border-radius: 6px; border-color: transparent; background: transparent; color: var(--text-secondary);
+}
+.draw-btn:hover { background: color-mix(in srgb, var(--text-primary) 8%, transparent); border-color: transparent; color: var(--text-primary); }
+.draw-btn.on { color: var(--series-call); background: color-mix(in srgb, var(--series-call) 15%, transparent); }
+.draw-btn.armed { color: var(--critical); background: color-mix(in srgb, var(--critical) 15%, transparent); }
+.draw-btn:disabled { opacity: 0.35; cursor: default; background: transparent; }
+.draw-sep { height: 1px; background: var(--border); margin: 4px 4px; }
+.draw-group { position: relative; }
+.draw-menu {
+  position: absolute; left: 34px; top: 0; z-index: 40; min-width: 250px; max-height: 72vh; overflow: auto;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22); padding: 4px;
+}
+.draw-menu-head { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); padding: 5px 8px 6px; }
+.draw-menu button {
+  display: flex; gap: 9px; align-items: center; width: 100%; text-align: left; border: 0; background: transparent;
+  min-height: 28px; padding: 4px 8px; font-size: 12px; border-radius: 5px;
+}
+.draw-menu button:hover { background: color-mix(in srgb, var(--text-primary) 7%, transparent); }
+.draw-menu button[aria-checked="true"] { color: var(--series-call); font-weight: 650; }
+.draw-menu button svg { flex: 0 0 18px; }
+
+/* Cursors. !important: the charts' own `#tech-chart svg` and `.hit` rules
+   set crosshair with an id's weight. */
+.draw-frame[data-draw-cursor="cross"] .draw-area svg, .draw-frame[data-draw-cursor="cross"] .draw-area svg *,
+.draw-frame[data-draw-cursor="draw"] .draw-area svg, .draw-frame[data-draw-cursor="draw"] .draw-area svg * { cursor: crosshair !important; }
+.draw-frame[data-draw-cursor="dot"] .draw-area svg, .draw-frame[data-draw-cursor="dot"] .draw-area svg * {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12'><circle cx='6' cy='6' r='3' fill='%23888' stroke='white' stroke-width='1.2'/></svg>") 6 6, crosshair !important;
+}
+.draw-frame[data-draw-cursor="arrow"] .draw-area svg, .draw-frame[data-draw-cursor="arrow"] .draw-area svg * { cursor: default !important; }
+.draw-frame[data-draw-cursor="arrow"] [data-xhair] line, .draw-frame[data-draw-cursor="arrow"] [data-txhair] line { visibility: hidden; }
+.draw-frame[data-draw-cursor="eraser"] .draw-area svg, .draw-frame[data-draw-cursor="eraser"] .draw-area svg * {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><path d='M3 13l7-8 7 6-6 7H7z' fill='white' stroke='%23333' stroke-width='1.4'/></svg>") 4 16, not-allowed !important;
+}
+
+/* The drawings themselves. Clicks are hit-tested in draw.js, not by the DOM. */
+.draw-layer { pointer-events: none; }
+.dw-line { fill: none; stroke: var(--draw-ink); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.dw-dash { stroke-dasharray: 5 4; stroke-width: 1; }
+.dw-level { stroke-width: 1.2; }
+.dw-fill { fill: var(--draw-ink); fill-opacity: 0.08; stroke: none; }
+.dw-band { fill-opacity: 0.07; stroke: none; }
+.dw-box { fill: var(--draw-ink); fill-opacity: 0.04; stroke: var(--draw-ink); stroke-opacity: 0.45; stroke-dasharray: 3 3; }
+.dw-range { fill: var(--draw-ink); fill-opacity: 0.1; stroke: var(--draw-ink); stroke-opacity: 0.5; stroke-width: 1; }
+.dw-text {
+  font-size: 10.5px; font-weight: 600; fill: var(--text-primary);
+  paint-order: stroke fill; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round;
+}
+.dw-small { font-size: 9.5px; }
+.dw-bold { font-weight: 750; }
+.dw-tag rect { fill: var(--draw-ink); }
+.dw-tag text { font-size: 10px; font-weight: 650; fill: #fff; }
+.dw-tag-pos rect { fill: var(--pos); }
+.dw-tag-neg rect { fill: var(--neg); }
+.dw-head { fill: var(--draw-ink); }
+.dw-dot { fill: var(--draw-ink); stroke: var(--surface-1); stroke-width: 1.5; }
+.dw-handle { fill: var(--surface-1); stroke: var(--draw-ink); stroke-width: 1.6; }
+.dw-target { fill: var(--pos); fill-opacity: 0.16; }
+.dw-target-edge { fill: none; stroke: var(--pos); stroke-width: 1; }
+.dw-stop { fill: var(--neg); fill-opacity: 0.16; }
+.dw-stop-edge { fill: none; stroke: var(--neg); stroke-width: 1; }
+.dw-entry { stroke: var(--text-secondary); stroke-width: 1.2; }
+.dw-vp { fill: var(--draw-ink); fill-opacity: 0.25; }
+.dw-vp.va { fill-opacity: 0.5; }
+.dw-poc { stroke: var(--series-put); stroke-width: 1.5; }
+.dw-vwap { stroke: var(--series-violet); stroke-width: 1.6; }
+.dw-brush { stroke-width: 2; }
+.dw-highlight { fill: none; stroke: var(--series-gold); stroke-opacity: 0.35; stroke-width: 12; stroke-linecap: round; stroke-linejoin: round; }
+.dw-mark-up { fill: var(--pos); stroke: var(--surface-1); stroke-width: 1.2; }
+.dw-mark-dn { fill: var(--neg); stroke: var(--surface-1); stroke-width: 1.2; }
+.dw-hit { fill: none; stroke: none; }
+.drw.preview { opacity: 0.85; }
+.drw.sel .dw-line { stroke-width: 2.2; }

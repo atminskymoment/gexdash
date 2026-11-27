@@ -5,6 +5,7 @@ Endpoints
 ``GET /``                     the dashboard (Terminal, Columns and Chart views)
 ``GET /connect``              the Schwab connect page
 ``GET /api/meta``             instruments, families, chart capabilities
+``GET /api/symbol``           what a typed ticker resolves to (any symbol, generic specs if unregistered)
 ``GET /api/exposure``         full exposure surface + levels + diagnostics
 ``GET /api/spot``             current underlying price
 ``GET /api/stream``           SSE: spot ticks with the surface recomputed
@@ -114,11 +115,25 @@ def _config(
 
 
 def _resolve(symbol: str):
-    """The instrument for ``symbol``, or a 404."""
+    """The instrument for ``symbol``, or a 404 for a malformed one.
+
+    Any well-formed symbol resolves (``instruments.resolve``): a registered
+    one to its verified spec, anything else to stated generic specs. Whether
+    the provider actually has it is the provider's answer, given where the
+    data would have been.
+    """
     try:
-        return instruments.get(symbol)
+        return instruments.resolve(symbol)
     except KeyError as exc:
-        raise HTTPException(404, str(exc)) from None
+        raise HTTPException(404, exc.args[0] if exc.args else str(exc)) from None
+
+
+def _require_exposure(inst) -> None:
+    """422 for an instrument whose exposure cannot be computed (a typed
+    future: its multiplier is unknown). Checked before any work, and before
+    ``/api/stream`` opens, so a refused symbol is one error, not one a tick."""
+    if inst.exposure_unavailable:
+        raise HTTPException(422, inst.exposure_unavailable)
 
 
 def _build_payload(inst, cfg: ExposureConfig, *, live_spot: bool = True) -> dict:
@@ -180,8 +195,10 @@ def _build_payload(inst, cfg: ExposureConfig, *, live_spot: bool = True) -> dict
         "model": inst.model,
         "exercise_style": inst.exercise_style,
         "display_strikes": inst.display_strikes,
-        "strike_step": inst.strike_step,
+        # A typed symbol's strikes come from its chain; there is no spec step.
+        "strike_step": None if inst.generic else inst.strike_step,
         "note": inst.note,
+        "generic": inst.generic,
     }
     # Built last: it reads the assembled payload, so what is interpreted is
     # exactly what the client is sent.
@@ -251,6 +268,7 @@ async def api_exposure(
     (or an unknown `dealer_sign`); 502 provider failure with no cached chain to fall back on.
     """
     inst = _resolve(symbol)
+    _require_exposure(inst)
     cfg = _config(expiry_window, dealer_sign, flip_method, rate, div)
     async with _lock:
         try:
@@ -285,6 +303,7 @@ async def api_refresh(symbol: str = Query("SPX")):
     to fall back on.
     """
     inst = _resolve(symbol)
+    _require_exposure(inst)
     async with _lock:
         try:
             chain = await asyncio.to_thread(get_provider().get_chain, inst, max_dte=60, force=True)
@@ -313,6 +332,7 @@ async def api_stream(
 ):
     """Server-sent events: re-price the cached chain on each spot tick."""
     inst = _resolve(symbol)
+    _require_exposure(inst)
     cfg = _config(expiry_window, dealer_sign, flip_method, rate, div)
 
     async def gen():
@@ -403,7 +423,9 @@ async def api_history(
     if plan is not None and plan.sessions:
         bars = trim_sessions(bars, plan.sessions, 6 if inst.is_future else 4)
     rolls: list[dict] = []
-    adjusted = bool(inst.is_future and adjust)
+    # Only the quarterly equity-index calendar is known (ES, NQ); a typed
+    # future such as /CL is served as the feed sends it.
+    adjusted = bool(inst.quarterly_rolls and adjust)
     if adjusted:
         bars, rolls = futures.back_adjust(bars)     # a copy; the feed's bars are untouched
 
@@ -420,8 +442,10 @@ async def api_history(
         lead = []
         if payload["meta"].get("unverified"):
             lead.append(payload["meta"]["unverified"])
-        if inst.is_future:
+        if inst.quarterly_rolls:
             lead.append(futures.adjust_note(inst.quote_symbol, adjusted=adjusted, rolls=rolls))
+        elif inst.is_future:
+            lead.append(_UNROLLED_NOTE.format(symbol=inst.quote_symbol))
         payload["plan"]["notes"] = [*lead, *payload["plan"]["notes"]]
 
     if indicators and len(bars) > 1:
@@ -446,6 +470,10 @@ async def api_history(
 #: and 30m, 1h and 4h over the same session share their 30-minute fetch.
 _TECH_TTL_SECONDS = 60.0
 _tech_cache: dict[tuple, tuple[float, object]] = {}
+
+#: Said wherever a typed future is drawn: its contract changes are steps.
+_UNROLLED_NOTE = ("{symbol}: contract changes are not adjusted. gexdash knows the roll calendar "
+                  "only for ES and NQ, so each roll may show as a step.")
 
 
 class _NoBars(Exception):
@@ -490,7 +518,7 @@ async def _astro_block(inst, source, *, bar_stamps, kind: str, minutes: int | No
     except _NoBars as exc:
         return {"available": False, "reason": f"daily history did not load: {exc}"}
     skip: set[int] = set()
-    if inst.is_future:
+    if inst.quarterly_rolls:
         _, rolls = futures.back_adjust(daily)       # positions only; the closes stay raw
         skip = {r["index"] for r in rolls}
     return await asyncio.to_thread(
@@ -572,12 +600,12 @@ async def api_technicals(
     # Contract changes: adjusted copies, never the cached series itself. The
     # daily bars behind the intraday 3M/52W levels get the same treatment.
     rolls: list[dict] = []
-    adjusted = bool(inst.is_future and adjust)
+    adjusted = bool(inst.quarterly_rolls and adjust)
     if adjusted:
         bars, rolls = futures.back_adjust(bars)
         if daily is not None:
             daily, _ = futures.back_adjust(daily)
-    elif inst.is_future:
+    elif inst.quarterly_rolls:
         _, rolls = futures.back_adjust(bars)    # positions only: where the series steps
 
     display_start = technicals.display_start_for(range, bars, session=kind, fallback=display_start)
@@ -590,10 +618,14 @@ async def api_technicals(
     notes += payload["warmup"]["notes"]
     first = payload["warmup"]["bars_before_window"]
     shown = [r for r in rolls if r["index"] >= first]
-    if inst.is_future:
+    if inst.quarterly_rolls:
         # About the rolls on screen; the warm-up's older ones move the long
         # averages' left edge only slightly.
         notes.insert(0, futures.adjust_note(inst.quote_symbol, adjusted=adjusted, rolls=shown))
+    elif inst.is_future:
+        notes.insert(0, _UNROLLED_NOTE.format(symbol=inst.quote_symbol))
+    if inst.generic:
+        notes.insert(0, f"{inst.label}: not one of gexdash's registered instruments.")
     if meta.get("unverified"):
         notes.insert(0, meta["unverified"])
     if astro:
@@ -609,6 +641,9 @@ async def api_technicals(
         "available": True,
         "symbol": inst.key,
         "label": inst.label,
+        "future": inst.is_future,
+        "quarterly_rolls": inst.quarterly_rolls,
+        "generic": inst.generic,
         "range": range,
         "adjusted": adjusted,
         # Contract changes inside the window, indexed like the bars.
@@ -795,6 +830,32 @@ async def api_breadth(
         except Exception:
             payload["history"] = []
     return payload
+
+
+@app.get("/api/symbol")
+async def api_symbol(symbol: str = Query(..., description="anything a user may type: AAPL, BRK.B, $RUT, /CL, SPX")):
+    """What a typed symbol resolves to, before anything is fetched for it.
+
+    A registered symbol or alias (``/ES``, ``$SPX``) returns its verified spec; any other
+    well-formed symbol returns the generic specs it would be priced with (``generic: true``).
+    ``exposure`` says whether the Terminal and Columns views can compute exposure for it, and
+    why not. Whether the provider has the symbol is answered by the data endpoints. 404 for a
+    malformed symbol, with what a symbol may look like.
+    """
+    inst = _resolve(symbol)
+    return {
+        "symbol": inst.key,
+        "label": inst.label,
+        "registered": not inst.generic,
+        "generic": inst.generic,
+        "model": inst.model,
+        "multiplier": None if inst.exposure_unavailable else inst.multiplier,
+        "exercise_style": inst.exercise_style,
+        "future": inst.is_future,
+        "quarterly_rolls": inst.quarterly_rolls,
+        "exposure": {"available": inst.exposure_unavailable is None,
+                     "reason": inst.exposure_unavailable},
+    }
 
 
 @app.get("/api/meta")

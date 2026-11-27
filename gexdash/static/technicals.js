@@ -49,9 +49,23 @@
  * used directly.
  */
 
+/** The quick-pick tabs. Any other symbol is typed into the box beside them. */
 const TECH_SYMBOLS = ["QQQ", "SPY", "USO", "ES", "NQ"];
-/** Futures are drawn over their full session; the regular/extended toggle is for ETFs. */
+/** Futures are drawn over their full session; the regular/extended toggle is
+ *  for ETFs. ES and NQ are also the futures whose quarterly rolls can be
+ *  adjusted; a typed future (/CL) is full-session but never roll-adjusted. */
 const TECH_FULL_SESSION = new Set(["ES", "NQ"]);
+/** What a typed symbol may look like, as instruments.SYMBOL_PATTERN; the
+ *  server has the last word. */
+const TECH_SYMBOL_RE = /^[$/]?[A-Z][A-Z0-9.]{0,11}$/;
+
+/** A future: ES, NQ, anything typed with a leading "/", or whatever the
+ *  latest payload for this symbol says. */
+const techIsFuture = (sym) => TECH_FULL_SESSION.has(sym) || String(sym).startsWith("/") ||
+  (tech.data?.symbol === sym && !!tech.data.future);
+/** A future on the quarterly equity-index calendar, so Adjust rolls applies. */
+const techRollsAdjustable = (sym) => TECH_FULL_SESSION.has(sym) ||
+  (tech.data?.symbol === sym && !!tech.data.quarterly_rolls);
 /** Empty space past the last candle, in pixels. Sized for the named level
  *  boxes ("VAMS→Bearish") that sit just left of the axis: a pad counted in bar
  *  slots shrinks to ~30px on a year of dailies, and the boxes then cover the
@@ -227,7 +241,7 @@ function initTechnicals() {
     if (!v) { try { v = localStorage.getItem(`gexdash-tech-${key}`); } catch { v = null; } }
     return v && ok(v) ? v : fallback;
   };
-  tech.symbol = read("chart", "QQQ", (v) => TECH_SYMBOLS.includes(v.toUpperCase())).toUpperCase();
+  tech.symbol = read("chart", "QQQ", (v) => TECH_SYMBOL_RE.test(v.trim().toUpperCase())).trim().toUpperCase();
   tech.range = read("chart_range", "1Y", (v) => /^(\d+[DMY]|YTD)$/i.test(v)).toUpperCase();
   tech.interval = read("chart_interval", "1D", (v) => /^(\d+[mh]|1D|1W)$/.test(v));
   tech.session = read("chart_session", "rth", (v) => v === "rth" || v === "eth");
@@ -249,6 +263,27 @@ function initTechnicals() {
       renderTechnicals();
       loadTechnicals();
     }));
+  // Any symbol: Enter (or leaving the box) loads it; Escape restores the one on screen.
+  $("tech-symbol-input").addEventListener("change", (e) => {
+    const sym = e.target.value.trim().toUpperCase();
+    if (!sym) return techSyncControls();
+    if (!TECH_SYMBOL_RE.test(sym)) {
+      e.target.value = TECH_SYMBOLS.includes(tech.symbol) ? "" : tech.symbol;
+      $("tech-note").textContent = `${sym} is not a symbol gexdash can look up: letters first, then letters, ` +
+        "digits or dots, with $ for a cash index or / for a future (AAPL, BRK.B, $RUT, /CL).";
+      return;
+    }
+    if (sym === tech.symbol) return;
+    tech.symbol = sym;
+    techRemember("chart", tech.symbol);
+    tech.data = null;
+    tech.zoom = null;
+    renderTechnicals();
+    loadTechnicals();
+  });
+  $("tech-symbol-input").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { techSyncControls(); e.target.blur(); }
+  });
   $("tech-range").addEventListener("change", (e) => {
     tech.range = e.target.value;
     techRemember("chart_range", tech.range);
@@ -291,6 +326,9 @@ function initTechnicals() {
   $("tech-zoom-out").addEventListener("click", () => techZoomBy(1.5));
   $("tech-zoom-reset").addEventListener("click", () => { tech.zoom = null; renderTechnicals(); });
   techSyncControls();
+  // Drawing tools: listeners on the stable host, so they outlive each render's SVG.
+  drawInit("tech", $("tech-chart"));
+  drawToolbar($("draw-bar-tech"), $("tech-chart"), $("draw-frame-tech"));
 }
 
 /** Persist one chart choice as gexdash-tech-<key>; skipped where storage is
@@ -323,15 +361,20 @@ function techSyncControls() {
   }).join("");
   $("tech-range").innerHTML = ranges.map((r) => opt(r, r, r === tech.range)).join("");
 
+  // A typed symbol shows in the box; a tab's symbol leaves it empty.
+  const box = $("tech-symbol-input");
+  if (document.activeElement !== box) box.value = TECH_SYMBOLS.includes(tech.symbol) ? "" : tech.symbol;
+  box.classList.toggle("active", !TECH_SYMBOLS.includes(tech.symbol));
+
   const intraday = techIsIntraday(tech.interval);
-  const full = TECH_FULL_SESSION.has(tech.symbol);
+  const full = techIsFuture(tech.symbol);
   const btn = $("tech-session");
   btn.hidden = !intraday;
   btn.disabled = full;
   btn.setAttribute("aria-pressed", String(full || tech.session === "eth"));
   btn.textContent = full ? "Full session" : "Ext hours";
   const adj = $("tech-adjust");
-  adj.hidden = !full;
+  adj.hidden = !techRollsAdjustable(tech.symbol);
   adj.setAttribute("aria-pressed", String(tech.adjust));
 }
 
@@ -364,8 +407,8 @@ async function loadTechnicals() {
   const q = new URLSearchParams({ symbol: tech.symbol, range: tech.range, interval: tech.interval });
   // Futures have no session choice; sending the ETF preference would only
   // earn a note saying it was not applied.
-  if (techIsIntraday(tech.interval) && !TECH_FULL_SESSION.has(tech.symbol)) q.set("session", tech.session);
-  if (TECH_FULL_SESSION.has(tech.symbol) && !tech.adjust) q.set("adjust", "false");
+  if (techIsIntraday(tech.interval) && !techIsFuture(tech.symbol)) q.set("session", tech.session);
+  if (techRollsAdjustable(tech.symbol) && !tech.adjust) q.set("adjust", "false");
   if (tech.layers.astro) q.set("astro", "true");
   $("tech-chart").classList.add("stale");
   let body;
@@ -393,6 +436,11 @@ async function loadTechnicals() {
   if (body.available) {
     if (body.range) tech.range = body.range;
     if (body.interval) tech.interval = body.interval;
+    // An alias resolves to its registered key ("/ES" is ES); show that one.
+    if (body.symbol && body.symbol !== tech.symbol) {
+      tech.symbol = body.symbol;
+      techRemember("chart", tech.symbol);
+    }
   }
 
   // A background refresh of the same series keeps the reader's zoom; a new
@@ -947,6 +995,15 @@ function renderTechnicals() {
     },
   };
   techAttach(svg);
+  // Drawings, in time and price, on the slots this render laid out.
+  drawAttach("tech", {
+    host, svg, symbol: d.symbol, plot: { l: padL, r: right, t: pTop, b: pBot },
+    x0: padL, lo, bw, yLo, yHi, stamps: d.time,
+    kind: d.interval === "1D" ? "daily" : d.interval === "1W" ? "weekly" : "minute",
+    step: techIsIntraday(d.interval) ? techIntervalMinutes(d.interval) * 60 : 0,
+    bars: { open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume },
+    fmtPrice: techPx, fmtTime: (stamp) => techStamp(stamp, d.interval),
+  });
   techNotes(d);
   techRules(d);
   techLegend(null);

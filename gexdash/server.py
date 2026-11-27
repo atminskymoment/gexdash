@@ -13,6 +13,8 @@ Endpoints
 ``GET /api/breadth``          exchange internals: advancing/declining, TICK, TRIN, A/D line
 ``GET /api/technicals``       the Chart view, 1-minute to weekly: averages, bands, profile,
                               signals, Supertrend, futures roll adjustment
+
+``astro=true`` on either chart endpoint adds the lunar-solar cycle (``cycles.py``).
 ``GET /api/auth/status``      Schwab token state; ``POST /api/auth/exchange`` and
                               ``POST /api/auth/logout`` complete or drop it
 
@@ -37,7 +39,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import exposure, futures, instruments, interpretation, technicals
+from . import cycles, exposure, futures, instruments, interpretation, technicals
 from .exposure import EXPIRY_WINDOWS, ExposureConfig
 from .providers import build_provider
 from .sessions import market_phase, trim_sessions
@@ -349,6 +351,7 @@ async def api_history(
     interval: str = Query("1m", description="1m 5m 10m 15m 30m 1h 2h 4h 1D 1W 1Mo"),
     indicators: bool = Query(True),
     adjust: bool = Query(True, description="futures: adjust for contract changes, as thinkorswim does"),
+    astro: bool = Query(False, description="add the lunar-solar cycle, its derivatives, projection and events"),
     # Legacy form, kept so existing callers keep working.
     interval_minutes: int | None = Query(None, deprecated=True),
     lookback_hours: float | None = Query(None, deprecated=True),
@@ -360,6 +363,9 @@ async def api_history(
 
     Returns 200 with ``{"available": false, "reason": ...}`` when the provider
     cannot serve history -- the rest of the dashboard is unaffected.
+
+    ``astro=true`` adds the lunar-solar ``astro`` block, as on
+    ``/api/technicals``, indexed like these bars.
     """
     inst = _resolve(symbol)
     provider = get_provider()
@@ -423,6 +429,13 @@ async def api_history(
         payload["indicators"] = await asyncio.to_thread(
             compute_all, bars.high, bars.low, bars.close
         )
+    if astro and len(bars):
+        from .history import INTERVALS
+        served = INTERVALS.get(plan.served_interval_key or plan.interval_key) if plan is not None else None
+        kind = served.kind if served else "minute"
+        minutes = served.minutes if served else bars.interval_minutes
+        payload["astro"] = await _astro_block(inst, source, bar_stamps=bars.time, kind=kind,
+                                              minutes=minutes, last_close=float(bars.close[-1]))
     return payload
 
 
@@ -458,6 +471,34 @@ async def _tech_bars(inst, source, plan) -> tuple[object, float]:
     return bars, 0.0
 
 
+async def _astro_block(inst, source, *, bar_stamps, kind: str, minutes: int | None,
+                       last_close: float) -> dict:
+    """The lunar-solar cycle for one chart (``cycles.py``), or a reason.
+
+    The fit is always on the symbol's daily history, the Chart view's
+    10-year fetch, shared through ``_tech_bars`` with the daily chart and the
+    intraday 3M/52W levels. Futures are fitted on the raw front-month closes
+    with each roll bar's return left out, whatever the chart's own adjust
+    toggle says: a contract change is not a return, and every other day's
+    return is exact. Back-adjusting first would not help. The additive
+    adjustment shifts each older segment by a constant, which rescales every
+    earlier return.
+    """
+    daily_plan, _ = technicals.plan_for("1Y", "1D")
+    try:
+        daily, _ = await _tech_bars(inst, source, daily_plan)
+    except _NoBars as exc:
+        return {"available": False, "reason": f"daily history did not load: {exc}"}
+    skip: set[int] = set()
+    if inst.is_future:
+        _, rolls = futures.back_adjust(daily)       # positions only; the closes stay raw
+        skip = {r["index"] for r in rolls}
+    return await asyncio.to_thread(
+        cycles.compute, daily.time, daily.close, bar_stamps=bar_stamps, kind=kind,
+        minutes=minutes, last_close=last_close, skip=frozenset(skip),
+    )
+
+
 @app.get("/api/technicals")
 async def api_technicals(
     symbol: str = Query("QQQ"),
@@ -468,6 +509,7 @@ async def api_technicals(
     st_period: int = Query(10, ge=1, le=200, description="Supertrend ATR period"),
     st_mult: float = Query(3.0, gt=0, le=20, description="Supertrend ATR multiplier"),
     adjust: bool = Query(True, description="futures: adjust for contract changes, as thinkorswim does"),
+    astro: bool = Query(False, description="add the lunar-solar cycle, its derivatives, projection and events"),
 ):
     """The technical chart: SMMA 20/50/100/200, EMA 9, Bollinger 20/2 and
     20/3, RSI, MACD, volume and volume profile, 3M/52W levels, ranges, the
@@ -481,6 +523,11 @@ async def api_technicals(
     range the bar size does not offer is replaced by its default, with a
     note. Returns 200 with ``{"available": false, "reason": ...}`` when the
     provider cannot serve bars.
+
+    ``astro=true`` adds an ``astro`` block (``cycles.py``): the lunar-solar
+    cycle and its two derivatives per bar, future slots past the last bar
+    with the projected path and its highs and lows, and the Moon and Sun
+    events in the window. Its rules join ``rules`` and its notes ``notes``.
     """
     inst = _resolve(symbol)
     iv = technicals.TECH_INTERVALS.get(interval)
@@ -549,6 +596,15 @@ async def api_technicals(
         notes.insert(0, futures.adjust_note(inst.quote_symbol, adjusted=adjusted, rolls=shown))
     if meta.get("unverified"):
         notes.insert(0, meta["unverified"])
+    if astro:
+        block = await _astro_block(inst, source, bar_stamps=bars.time[first:], kind=iv.kind,
+                                   minutes=iv.minutes, last_close=payload["close"][-1])
+        payload["astro"] = block
+        if block.get("available"):
+            notes += block["notes"]
+            payload["rules"] = [*payload["rules"], *block["rules"]]
+        else:
+            notes.append(f"Lunar-solar cycle unavailable: {block.get('reason')}")
     payload.update({
         "available": True,
         "symbol": inst.key,

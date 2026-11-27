@@ -39,8 +39,14 @@
  * `rules`, `notes` and `caps`. Every index is into the displayed window, not
  * the longer history the indicators were computed over.
  *
+ * Moon/Sun (the `astro` layer, off by default, fetched with astro=true): the
+ * lunar-solar block is drawn by astro.js. Its future dates are extra slots
+ * after the last bar, so `total` slots include them while `hb`, in the render,
+ * is where the candles stop; techSlotTime() gives any slot's stamp.
+ *
  * Borrowed from app.js, which loads after this file, so only at call time:
- * `$`, `esc` and `state`. tz.js loads first; its tz* helpers are used directly.
+ * `$`, `esc` and `state`. tz.js and astro.js load first; their helpers are
+ * used directly.
  */
 
 const TECH_SYMBOLS = ["QQQ", "SPY", "USO", "ES", "NQ"];
@@ -78,13 +84,16 @@ const tech = {
   layers: {
     smma: true, ema: true, bb2: true, bb3: true,
     ranges: true, levels: true, profile: true, signals: true, supertrend: true,
+    // The lunar-solar layer (astro.js) costs a larger payload, so it is
+    // fetched only while on, and starts off.
+    astro: false,
   },
 };
 
 const TECH_LAYERS = [
   ["smma", "SMMA"], ["ema", "EMA 9"], ["bb2", "BB 20/2"], ["bb3", "BB 20/3"],
   ["ranges", "Ranges"], ["levels", "Levels"], ["profile", "Profile"], ["signals", "Signals"],
-  ["supertrend", "Supertrend"],
+  ["supertrend", "Supertrend"], ["astro", "Moon/Sun"],
 ];
 
 /* Colours are role tokens defined in styles.css for light and dark. The five
@@ -116,6 +125,8 @@ const TECH_PANES = [
   { key: "volume", h: 84 },
   { key: "rsi", h: 104 },
   { key: "macd", h: 112 },
+  // Only while the Moon/Sun layer is on and the server could compute it.
+  { key: "astro", h: 124 },
   { key: "vams", h: 30 },
   { key: "vamscheck", h: 30 },
 ];
@@ -221,6 +232,7 @@ function initTechnicals() {
   tech.interval = read("chart_interval", "1D", (v) => /^(\d+[mh]|1D|1W)$/.test(v));
   tech.session = read("chart_session", "rth", (v) => v === "rth" || v === "eth");
   tech.adjust = read("chart_adjust", "on", (v) => v === "on" || v === "off") === "on";
+  tech.layers.astro = read("chart_astro", "off", (v) => v === "on" || v === "off") === "on";
 
   $("tech-symbols").innerHTML = TECH_SYMBOLS
     .map((s) => `<button role="tab" data-sym="${s}">${s}</button>`).join("");
@@ -266,7 +278,13 @@ function initTechnicals() {
   });
   $("tech-layers").querySelectorAll("button").forEach((b) =>
     b.addEventListener("click", () => {
-      tech.layers[b.dataset.layer] = !tech.layers[b.dataset.layer];
+      const key = b.dataset.layer;
+      tech.layers[key] = !tech.layers[key];
+      if (key === "astro") {
+        techRemember("chart_astro", tech.layers.astro ? "on" : "off");
+        // The block comes only with astro=true; fetch it the first time.
+        if (tech.layers.astro && tech.data?.available && !tech.data.astro) return loadTechnicals();
+      }
       renderTechnicals();
     }));
   $("tech-zoom-in").addEventListener("click", () => techZoomBy(1 / 1.5));
@@ -348,6 +366,7 @@ async function loadTechnicals() {
   // earn a note saying it was not applied.
   if (techIsIntraday(tech.interval) && !TECH_FULL_SESSION.has(tech.symbol)) q.set("session", tech.session);
   if (TECH_FULL_SESSION.has(tech.symbol) && !tech.adjust) q.set("adjust", "false");
+  if (tech.layers.astro) q.set("astro", "true");
   $("tech-chart").classList.add("stale");
   let body;
   try {
@@ -407,16 +426,28 @@ function stopTechTimer() {
 
 /* ---------------------------------------------------------------- render */
 
-/** The visible [lo, hi) bar indices from tech.zoom: at least 10 bars where
- *  the series has them, and all of them when zoom is null. */
-function techWindow(n) {
+/** The visible [lo, hi) slot indices from tech.zoom, over `n` slots of which
+ *  the first `bars` are bars (the rest are the lunar-solar layer's future
+ *  dates): at least 10 slots, at least 10 of them bars where the series has
+ *  them, and every slot when zoom is null. */
+function techWindow(n, bars = n) {
   if (!tech.zoom) return [0, n];
   const span = Math.max(tech.zoom[1] - tech.zoom[0], 10);
   let lo = Math.max(0, Math.round(tech.zoom[0]));
+  lo = Math.min(lo, Math.max(0, bars - 10));
   const hi = Math.min(n, Math.round(lo + span));
   if (hi - lo < 10) lo = Math.max(0, hi - 10);
   return [lo, hi];
 }
+
+/** The stamp of slot i: a bar's time, or past the last bar the lunar-solar
+ *  layer's future date. */
+function techSlotTime(d, i) {
+  return i < d.time.length ? d.time[i] : d.astro?.future?.time?.[i - d.time.length];
+}
+
+/** The lunar-solar block when its layer is on and it was computed, else null. */
+const techAstro = (d) => (tech.layers.astro && astroOk(d?.astro) ? d.astro : null);
 
 /** The payload's signal rules (RULES in technicals.py) in the list under
  *  the chart, worded as the server words them. */
@@ -463,8 +494,13 @@ function renderTechnicals() {
   }
 
   const total = d.close.length;
-  const [lo, hi] = techWindow(total);
+  // With the Moon/Sun layer on, future dates follow the bars as extra slots.
+  // Bars stop at hb; slots from hb to hi are dates, not candles.
+  const astro = techAstro(d);
+  const slots = total + (astro ? astroFutureCount(astro, total) : 0);
+  const [lo, hi] = techWindow(slots, total);
   const n = hi - lo;
+  const hb = Math.min(hi, total);
 
   const W = Math.max(host.clientWidth || 900, 420);
   const padL = 8, padR = 78;
@@ -476,11 +512,11 @@ function renderTechnicals() {
   // bar's values and add that height to the pane as a strip the plot never
   // enters, so no candle or marker is drawn under it.
   const legendEl = $("tech-legend");
-  legendEl.innerHTML = techLegendRows(d, hi - 1);
+  legendEl.innerHTML = techLegendRows(d, hb - 1);
   const legendBottom = legendEl.offsetHeight ? legendEl.offsetTop + legendEl.offsetHeight : 0;
   const inset = Math.max(0, Math.ceil(legendBottom + 6 - top));
   const panes = {};
-  TECH_PANES.forEach((p) => {
+  TECH_PANES.filter((p) => p.key !== "astro" || astro).forEach((p) => {
     const h = p.key === "price" ? p.h + inset : p.h;
     panes[p.key] = { ...p, h, top };
     top += h + TECH_GAP;
@@ -502,7 +538,7 @@ function renderTechnicals() {
   const overlays = TECH_OVERLAYS.filter((o) => tech.layers[o.layer]);
 
   let yLo = Infinity, yHi = -Infinity;
-  for (let i = lo; i < hi; i++) { yLo = Math.min(yLo, d.low[i]); yHi = Math.max(yHi, d.high[i]); }
+  for (let i = lo; i < hb; i++) { yLo = Math.min(yLo, d.low[i]); yHi = Math.max(yHi, d.high[i]); }
   // The averages and bands share the price axis legitimately -- they are
   // prices -- so the scale includes them, as any chart platform's does.
   overlays.forEach((o) => {
@@ -516,6 +552,9 @@ function renderTechnicals() {
     const s = d.series[k];
     for (let i = lo; i < hi; i++) if (techOk(s[i])) { yLo = Math.min(yLo, s[i]); yHi = Math.max(yHi, s[i]); }
   });
+  // The projected path is a price, so it shares the axis like the averages.
+  const pathExt = astro ? astroPathExtent(astro, lo, hi, total) : null;
+  if (pathExt) { yLo = Math.min(yLo, pathExt[0]); yHi = Math.max(yHi, pathExt[1]); }
 
   const levels = [];
   if (tech.layers.levels) {
@@ -559,12 +598,14 @@ function renderTechnicals() {
     const tot = pr.up.map((u, k) => u + pr.down[k]);
     const mx = Math.max(...tot) || 1;
     const maxW = innerW * 0.2;
+    // Anchored at the last bar, not the axis, when future dates fill the right.
+    const edge = hi > total ? x(total - 1) + bw / 2 : right;
     for (let k = 0; k < tot.length; k++) {
       const yTop = py(pr.edges[k + 1]), yBot = py(pr.edges[k]);
       const h = Math.max(yBot - yTop - 1, 0.6);
       const wu = (pr.up[k] / mx) * maxW, wd = (pr.down[k] / mx) * maxW;
-      if (wu > 0.2) parts.push(`<rect class="vp-up" x="${(right - wu).toFixed(1)}" y="${(yTop + 0.5).toFixed(1)}" width="${wu.toFixed(1)}" height="${h.toFixed(1)}"/>`);
-      if (wd > 0.2) parts.push(`<rect class="vp-dn" x="${(right - wu - wd).toFixed(1)}" y="${(yTop + 0.5).toFixed(1)}" width="${wd.toFixed(1)}" height="${h.toFixed(1)}"/>`);
+      if (wu > 0.2) parts.push(`<rect class="vp-up" x="${(edge - wu).toFixed(1)}" y="${(yTop + 0.5).toFixed(1)}" width="${wu.toFixed(1)}" height="${h.toFixed(1)}"/>`);
+      if (wd > 0.2) parts.push(`<rect class="vp-dn" x="${(edge - wu - wd).toFixed(1)}" y="${(yTop + 0.5).toFixed(1)}" width="${wd.toFixed(1)}" height="${h.toFixed(1)}"/>`);
     }
   }
 
@@ -617,12 +658,22 @@ function renderTechnicals() {
   }
 
   // Candles.
-  for (let i = lo; i < hi; i++) {
+  for (let i = lo; i < hb; i++) {
     const cls = d.close[i] >= d.open[i] ? "candle-up" : "candle-dn";
     const cx = x(i).toFixed(1);
     parts.push(`<line class="wick ${cls}" x1="${cx}" x2="${cx}" y1="${py(d.high[i]).toFixed(1)}" y2="${py(d.low[i]).toFixed(1)}"/>`);
     const yo = py(d.open[i]), yc = py(d.close[i]);
     parts.push(`<rect class="${cls}" x="${(x(i) - body / 2).toFixed(1)}" y="${Math.min(yo, yc).toFixed(1)}" width="${body.toFixed(1)}" height="${Math.max(Math.abs(yc - yo), 0.8).toFixed(1)}"/>`);
+  }
+
+  // Lunar-solar projection: dotted from the last close, highs and lows labelled.
+  if (astro) {
+    parts.push(astroNowMarkup(total, lo, hi, x, bw, pTop, pBot));
+    parts.push(...astroProjectionMarkup(astro, {
+      lo, hi, total, x, y: py, lastClose: d.close[total - 1], top: pTop, bottom: pBot,
+      // Clear of the named level boxes that sit just left of the axis.
+      left: padL, right: right - 96,
+    }));
   }
 
   // Signal markers: an arrow plus a label. Laid out in bar order; one that
@@ -704,7 +755,7 @@ function renderTechnicals() {
   }
 
   /* ---- right-axis tags: laid out first, so axis labels can avoid them ---- */
-  const last = hi - 1;
+  const last = hb - 1;
   const prevClose = last > 0 ? d.close[last - 1] : d.prev_close;
   const tags = [{
     price: d.close[last], solid: true,
@@ -831,8 +882,29 @@ function renderTechnicals() {
     }
   });
 
+  /* ---------------- lunar-solar pane ---------------- */
+  let astroGeom = null;
+  if (astro) {
+    const ap = panes.astro;
+    const aTop = ap.top + TECH_TITLE_H, aBot = ap.top + ap.h;
+    const pane = astroPaneMarkup(astro, { lo, hi, total, x, bw, left: padL, right, top: aTop, bottom: aBot });
+    parts.push(...pane.parts);
+    // A named tag per line at the last bar, as the reference draws them.
+    const astroTags = ASTRO_LINES
+      .map((l) => ({ price: astroAt(astro, l.key, last, total), colour: l.colour, name: l.label, fmt: (v) => astroSigned(v) }))
+      .filter((t) => t.price !== null);
+    techPlaceTags(astroTags, pane.plotTop, aBot, pane.y);
+    [[1, "+1"], [0, "0"], [-1, "−1"]].forEach(([v, label]) => {
+      if (astroTags.some((t) => Math.abs(t.ty - pane.y(v)) < 12)) return;
+      parts.push(`<text class="axis-label" x="${right + 6}" y="${(pane.y(v) + 3).toFixed(1)}">${label}</text>`);
+    });
+    tagsOut.push(...techTagMarkup(astroTags, right, padR));
+    // The crosshair reads the plot under the icon strip, where y maps ±1.1.
+    astroGeom = { top: pane.plotTop, bottom: aBot, lo: -1.1, hi: 1.1, fmt: (v) => astroSigned(v) };
+  }
+
   /* ---------------- pane titles (updated on hover) ---------------- */
-  ["volume", "rsi", "macd", "vams", "vamscheck"].forEach((k) =>
+  ["volume", ...(astro ? ["astro"] : []), "rsi", "macd", "vams", "vamscheck"].forEach((k) =>
     parts.push(`<text class="pane-title" data-ptitle="${k}" x="${padL + 2}" y="${panes[k].top + 10}"></text>`));
 
   /* ---------------- date axis ---------------- */
@@ -862,13 +934,16 @@ function renderTechnicals() {
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(d.symbol)} technical chart">${parts.join("")}</svg>`;
   const svg = host.querySelector("svg");
 
+  // `total` is every slot, future dates included, because pan and zoom
+  // range over them; `bars` is where the candles stop.
   tech.geom = {
-    W, H, padL, padR, innerW, right, bw, lo, hi, n, total, axisTop,
+    W, H, padL, padR, innerW, right, bw, lo, hi, n, total: slots, bars: total, axisTop,
     panes: {
       price: { top: pTop, bottom: pBot, lo: yLo, hi: yHi, fmt: techPx },
       volume: { top: vTop, bottom: vTop + vH, lo: 0, hi: vmax || 1, fmt: techVol },
       rsi: { top: rTop, bottom: rTop + rH, lo: 0, hi: 100, fmt: (v) => v.toFixed(2) },
       macd: { top: mTop, bottom: mTop + mH, lo: -mAbs, hi: mAbs, fmt: (v) => techSigned(v) },
+      ...(astroGeom ? { astro: astroGeom } : {}),
     },
   };
   techAttach(svg);
@@ -924,7 +999,7 @@ function techDateAxis(d, lo, hi, x, axisTop, innerW, n, plotTop) {
   const marks = [];
   let prevKey = null;
   for (let i = lo; i < hi; i++) {
-    const dt = techDate(d.time[i]);
+    const dt = techDate(techSlotTime(d, i));
     const key = dt.getUTCFullYear() * 12 + dt.getUTCMonth();
     if (prevKey !== null && key !== prevKey) marks.push({ i, dt });
     prevKey = key;
@@ -933,7 +1008,7 @@ function techDateAxis(d, lo, hi, x, axisTop, innerW, n, plotTop) {
   if (marks.length < 2) {
     const every = Math.max(1, Math.round(n / Math.max(innerW / 90, 2)));
     for (let i = lo; i < hi; i += every) {
-      const dt = techDate(d.time[i]);
+      const dt = techDate(techSlotTime(d, i));
       out.push(`<text class="axis-label date" x="${x(i).toFixed(1)}" y="${axisTop + 13}" text-anchor="middle">${dt.getUTCDate()} ${TECH_MONTH_FMT.format(dt)}</text>`);
     }
     return out;
@@ -1028,21 +1103,35 @@ function techNotes(d) {
 function techLegend(index) {
   const d = tech.data, g = tech.geom;
   if (!d || !d.available || !g) return;
-  const i = index == null ? g.hi - 1 : index;
+  // At rest the legend shows the last bar in view, never a future date.
+  const i = index == null ? Math.min(g.hi, g.bars) - 1 : index;
   $("tech-legend").innerHTML = techLegendRows(d, i);
   techPaneTitles(d, i, index == null);
 }
 
-/** Legend markup for bar i. Separate so the render can measure it first. */
+/** Legend markup for slot i: a bar, or past the last bar a lunar-solar
+ *  future date. Separate so the render can measure it first. */
 function techLegendRows(d, i) {
+  const astro = techAstro(d);
+  const total = d.close.length;
+  const item = (colour, name, value) =>
+    `<span class="tl-item">${colour ? `<span class="r-dot" style="background:${colour}"></span>` : ""}${name} <b>${value}</b></span>`;
+  if (i >= total) {
+    // A future date has no candle: its date, the projected price where the
+    // bar size has one, and the Moon.
+    const s = astroSlotInfo(astro, i, total);
+    return `<div class="tl-row tl-head"><span class="tl-sym">${esc(d.symbol)}</span>` +
+      `<span class="muted">projected · lunar-solar cycle</span>` +
+      `<span class="tl-when">${techStamp(techSlotTime(d, i), d.interval)}</span>` +
+      (s?.path !== null && s?.path !== undefined ? item(null, "Path", techPx(s.path)) : "") + `</div>` +
+      (astro ? techAstroLegendRow(astro, i, total, item, false) : "");
+  }
   const prev = i > 0 ? d.close[i - 1] : d.prev_close;
   const chg = techOk(prev) && prev ? ((d.close[i] - prev) / prev) * 100 : null;
   const dir = techOk(prev) && d.close[i] < prev ? "dn" : "up";
   const ivCaps = techIntervalCaps(d.interval);
   const sessionName = { rth: "Regular hours", eth: "Extended hours", futures: "Full session" }[d.session];
   const interval = [ivCaps?.label || d.interval, sessionName].filter(Boolean).join(" · ");
-  const item = (colour, name, value) =>
-    `<span class="tl-item">${colour ? `<span class="r-dot" style="background:${colour}"></span>` : ""}${name} <b>${value}</b></span>`;
 
   const rows = [
     `<div class="tl-row tl-head"><span class="tl-sym">${esc(d.symbol)}</span>` +
@@ -1066,7 +1155,21 @@ function techLegendRows(d, i) {
     ov.push(item(null, "Range low", techPx(d.current_range.low)));
   }
   if (ov.length) rows.push(`<div class="tl-row">${ov.join("")}</div>`);
+  if (astro) rows.push(techAstroLegendRow(astro, i, total, item, i === total - 1));
   return rows.join("");
+}
+
+/** The legend's Moon row for slot i: phase and share lit, distance and
+ *  declination, and on the latest bar the next new or full moon. */
+function techAstroLegendRow(a, i, total, item, latest) {
+  const s = astroSlotInfo(a, i, total);
+  if (!s || s.phase === null) return "";
+  const bits = [item(null, s.phase, `${Math.round((s.illum ?? 0) * 100)}% lit`)];
+  if (s.dist !== null) bits.push(item(null, "Moon", `${Math.round(s.dist).toLocaleString("en-US")} km`));
+  if (s.dec !== null) bits.push(item(null, "dec", `${astroSigned(s.dec, 1)}°`));
+  const next = latest ? astroNextPhase(a, i) : null;
+  if (next) bits.push(item(null, `Next ${next.label.toLowerCase()}`, astroWhen(next)));
+  return `<div class="tl-row">${bits.join("")}</div>`;
 }
 
 /** Titles of the lower panes for bar i; `latest` adds the current position. */
@@ -1085,6 +1188,7 @@ function techPaneTitles(d, i, latest) {
     vams: `VAMS ${val(vamsName(d.vams.state[i]))}` +
       (latest ? `  <tspan class="muted-t">· position ${esc(d.position)}</tspan>` : ""),
     vamscheck: `VAMS check ${val(vamsName(d.vams.check[i], true))}`,
+    astro: techAstro(d) ? astroTitleSpans(d.astro, i, d.close.length) : "",
   };
   document.querySelectorAll("#tech-chart [data-ptitle]").forEach((t) => {
     t.innerHTML = titles[t.dataset.ptitle] || "";
@@ -1210,7 +1314,7 @@ function techDrawCrosshair(svg, clientX, clientY) {
     h.style.display = "none"; tv.style.display = "none";
   }
 
-  const label = techStamp(d.time[i], d.interval);
+  const label = techStamp(techSlotTime(d, i), d.interval);
   const tw = label.length * 5.6 + 10;
   const lx = Math.min(Math.max(cx, g.padL + tw / 2), g.right - tw / 2);
   const dg = xh.querySelector("[data-tdate]");

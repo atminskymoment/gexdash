@@ -79,6 +79,15 @@
   --st-up-box: #1b7d39;
   --st-dn-box: #c42f28;
 
+  /* Lunar-solar pane: LSC / 1st / 2nd derivative. Validated as one
+     categorical set against both surfaces, all pairs: light passes every
+     check but green's contrast (2.7:1), relieved by the pane title naming
+     each line beside its value; dark passes all six. Line weight also
+     differs (2 / 1.5 / 1px), so identity is never hue alone. */
+  --astro-lsc: #eb6834;
+  --astro-d1: #2a78d6;
+  --astro-d2: #1baf7a;
+
   /* status — reserved, never used as a series */
   --good: #0ca30c;
   --warning: #fab219;
@@ -120,6 +129,9 @@
     --sig-breakout: #0ca30c;
     --st-up: #2fae54;
     --st-dn: #e5524b;
+    --astro-lsc: #d95926;
+    --astro-d1: #3987e5;
+    --astro-d2: #199e70;
   }
 }
 
@@ -148,6 +160,9 @@
   --sig-breakout: #0ca30c;
   --st-up: #2fae54;
   --st-dn: #e5524b;
+  --astro-lsc: #d95926;
+  --astro-d1: #3987e5;
+  --astro-d2: #199e70;
 }
 
 * { box-sizing: border-box; }
@@ -589,8 +604,10 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
               stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round; }
 
 .ind-pane { margin-top: 2px; }
-.ind-title { font-size: 10px; font-weight: 620; color: var(--text-secondary); letter-spacing: 0.04em; }
+/* `fill`, not just `color`: SVG text ignores color, and was black on the dark surface. */
+.ind-title { font-size: 10px; font-weight: 620; color: var(--text-secondary); fill: var(--text-secondary); letter-spacing: 0.04em; }
 .ind-line { fill: none; stroke-width: 1.4; }
+.ind-title .v { fill: var(--text-primary); }
 .ind-band { fill: var(--text-primary); opacity: 0.05; }
 
 
@@ -837,3 +854,24 @@ body[data-view="chart"] .ticker-field { display: none !important; }
 @media (max-width: 700px) {
   .tech-rules { grid-template-columns: 1fr; }
 }
+
+/* ---- lunar-solar layer (astro.js), both price charts ---- */
+.astro-line { fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.astro-line.lsc { stroke: var(--astro-lsc); stroke-width: 2; }
+.astro-line.d1 { stroke: var(--astro-d1); stroke-width: 1.5; }
+.astro-line.d2 { stroke: var(--astro-d2); stroke-width: 1; }
+/* Past the last bar everything is computed, not observed: dotted. */
+.astro-line.future { stroke-dasharray: 1.5 3; }
+.astro-line.lsc.future { stroke-dasharray: 2 3; }
+.astro-now { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 4 3; }
+.astro-guide { stroke: var(--gridline); stroke-width: 1; shape-rendering: crispEdges; }
+.astro-path { fill: none; stroke: var(--text-primary); stroke-width: 2; stroke-dasharray: 2 3.5; stroke-linecap: round; }
+.astro-turn circle { fill: var(--text-primary); stroke: var(--surface-1); stroke-width: 1.5; }
+.astro-turn text {
+  font-size: 10px; font-weight: 650; fill: var(--text-primary);
+  paint-order: stroke fill; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round;
+}
+.astro-turn, .astro-ev { cursor: help; }
+.astro-ev text { font-size: 10px; fill: var(--text-secondary); }
+.astro-ev.minor text { font-size: 8.5px; fill: var(--text-muted); }
+.astro-ev line { stroke: var(--text-muted); stroke-opacity: 0.35; stroke-width: 1; stroke-dasharray: 1 3; }

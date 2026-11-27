@@ -36,6 +36,8 @@ whole surface live without a live OI feed, which does not exist at any price.
 | `history.py` | Chart range/interval vocabulary and the mapping onto the provider's period types, plus aggregation and the two limits that decide which intervals a range can offer. Owns every compromise between what was asked for and what can be served, and records each one in `plan.notes`. |
 | `indicators.py` | RSI + MA(20), MACD, ADX/DI, SMMA, Bollinger, ATR. Server-side so they can be tested — Wilder smoothing where Wilder specified it, conventional EMAs for MACD, population stdev for Bollinger. |
 | `technicals.py` | The Chart view. Fetches the history the bar size needs (all of it for daily/weekly, the longest range plus ~1,000 bars intraday), computes every overlay over it, then trims to the requested range, so long averages are converged at the left edge. Owns intraday sessions: regular/extended/futures hours, session-anchored hourly and 4-hour bars, session-counted ranges. Also holds the gexdash signal rules (VAMS, ranges, BUY/ADD/TRIM/SELL), written out in `RULES` and shipped with each payload, and the Supertrend port. |
+| `astro.py` | Sun and Moon positions from Meeus (chapters 25 and 47, the full periodic-term tables), vectorized over numpy arrays, and the event search: phases and equinoxes by root-finding the elongation and the Sun's longitude, perigee and apogee by refining the distance's turns. No data files and no dependency, so it runs into the future as easily as the past. |
+| `cycles.py` | The lunar-solar cycle: a ridge fit of daily returns on cos/sin of five ephemeris angles, the cycle component accumulated over trading days, its two derivatives read in continuous time, the projected path and its zigzag turns, the holdout test against a no-skill baseline, and each event's chart slot. Always fitted on daily bars, then evaluated at the chart's bar times, so one fit serves every bar size. Rules in `RULES`, like the technicals'. |
 | `interpretation.py` | The written reading of the exposure surface. Server-side for the same reason: prose assembled in the browser is prose nobody checks, and an inverted comparison still reads fluently. |
 | `american.py` | CRR binomial, used **only** to bound the European-approximation error, and the two per-model disclosure notes. Not in the hot path. |
 | `chain.py` | `OptionChain`: parallel numpy arrays, not a list of objects. `with_spot()` shares arrays rather than copying. |
@@ -81,11 +83,23 @@ OI surface is usable; a 502 is not.
 
 ## Frontend
 
-No framework, no build step, no CDN — one HTML file, one CSS file, two JS
-files, and hand-rolled SVG charts. `technicals.js` (the Chart view) loads
-before `app.js` and only defines functions; `app.js` owns startup. Every
-top-level name in it is prefixed `tech`/`TECH_`, because classic scripts share
-one global scope and a duplicate `const` stops the second file loading.
+No framework, no build step, no CDN — one HTML file, one CSS file, four JS
+files, and hand-rolled SVG charts. `tz.js` (the display zone), `astro.js` (the
+Moon/Sun layer) and `technicals.js` (the Chart view) load before `app.js` and
+only define functions; `app.js` owns startup. Every top-level name in them is
+prefixed `tz`, `astro`/`ASTRO_` or `tech`/`TECH_`, because classic scripts
+share one global scope and a duplicate `const` stops the second file loading.
+
+### The Moon/Sun layer on both price charts
+
+`astro.js` draws the lunar-solar block for the Terminal chart and the Chart
+view alike: the pane, the projected path with its labelled turns, the event
+icons. Each chart passes its own slot-to-x map. Future dates are extra
+*slots* after the last bar, never rows appended to the OHLC arrays, because
+every other layer reads those as real bars. Loops over candles stop at the last
+bar, while the x-domain, pan, zoom and crosshair run on to the last future
+slot. Hovering a future date shows its date, projected price and the Moon,
+with OHLC left blank.
 
 ### Three views
 
@@ -162,6 +176,8 @@ python -m pytest tests/ -q
 | `test_server.py` | Full API including SSE, stale fallback, error mapping, request latency |
 | `test_futures.py` | Roll dates are the Monday of expiry week; additive and ratio adjustment close each gap exactly and never move the latest price; intraday rolls at the Sunday-evening open; weekly bars matched by ISO week (stamped Sunday or Monday); the cached series is never adjusted in place; both endpoints adjust ES/NQ by default and never an ETF |
 | `test_tz.py` | The display zone, run under Node (skipped without it): exchange time by default, half-hour offsets, crossing midnight, daylight-saving tags (BST, CEST, AEDT) and New York's skipped hour, unknown zones falling back, ICU's alias for Kolkata keeping India's entry; the page loads `tz.js` first |
+| `test_astro.py` | The Moon against Meeus example 47.a (longitude to 5e-6°, distance to 0.1 km), the Sun against 25.a, illumination against 48.a; new and full moons (the 2024 eclipses, Meeus 49.a) within 2 minutes, the 2024 equinoxes and solstices within 15; a year of events in order, with perigee and apogee alternating at plausible distances |
+| `test_cycles.py` | The fit recovers a planted lunar effect's amplitude and timing and its holdout sees it; pure noise stays inside the noise band and is scored against the no-skill mix, not 50%; no lookahead (the fit is identical whatever the chart or horizon); roll days left out; cash-close reading across daylight saving, weekly and monthly period ends; future dates; zigzag turns; the path is the last close moved by ΔLSC and turns where d1 changes sign; no weekend steps in d2; each event at the first slot closing after it; both endpoints, and unchanged payloads without `astro` |
 | `test_technicals.py` | SMMA is Wilder, Bollinger is population stdev, ATR uses the previous close; VAMS latching and decay; bases, breakouts and cooldown; one-position BUY/ADD/TRIM/SELL; profile conserves volume; warm-up leaves no gaps in the window; Supertrend against a hand-worked Pine evaluation, including its previous-band comparisons; hourly/4-hour anchoring (across a DST change), session-counted ranges, regular-hours default for ETFs, full session for futures; the endpoint for all five symbols, one fetch shared across ranges and across 30m/1h/4h |
 
 ### Regression tests worth knowing about

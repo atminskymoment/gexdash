@@ -233,6 +233,7 @@ curl "http://127.0.0.1:8420/api/history?symbol=SPX&range=3M&interval=1D"
 | `interval` | `1m` | `1m` `5m` `10m` `15m` `30m` `1h` `2h` `4h` `1D` `1W` `1Mo` |
 | `indicators` | `true` | include RSI + MA(20), MACD and ADX/DI |
 | `adjust` | `true` | ES/NQ: adjust for contract changes, as on the Chart view |
+| `astro` | `false` | add the lunar-solar [`astro` block](#the-astro-block), indexed like these bars |
 | `interval_minutes` | *unset* | **deprecated** legacy form, still honoured |
 | `lookback_hours` | *unset* | **deprecated** legacy form, still honoured |
 
@@ -338,6 +339,7 @@ curl "http://127.0.0.1:8420/api/technicals?symbol=QQQ&range=1Y&interval=1D"
 | `st_period` | `10` | Supertrend ATR period |
 | `st_mult` | `3.0` | Supertrend ATR multiplier |
 | `adjust` | `true` | ES/NQ: adjust for contract changes (thinkorswim's option). Ignored for ETFs |
+| `astro` | `false` | add the lunar-solar [`astro` block](#the-astro-block); its rules join `rules` and its notes `notes` |
 
 Each interval offers its own ranges (`caps.intervals[].ranges`): 1-minute
 offers 1D and 5D, 4-hour offers 1M to 6M, daily offers 3M to 5Y. A range the
@@ -420,6 +422,60 @@ are not a reconstruction of that script. Change the thresholds in
 Unavailable history is a `200` with `available: false` and a `reason`, as for
 `/api/history`.
 
+### The `astro` block
+
+`astro=true` on `/api/history` or `/api/technicals` adds the lunar-solar cycle
+(`cycles.py`; the model is in [methodology §11](methodology.md#11-the-lunar-solar-cycle)).
+It is fitted to the symbol's **daily** history whatever the chart's bar size,
+using the Chart view's cached 10-year fetch, and evaluated at the chart's bar
+times. ES and NQ are fitted on the raw front month with each roll day's return
+left out. Without the parameter the payloads are unchanged.
+
+```jsonc
+"astro": {
+  "available": true,
+  "kind": "daily",                         // minute | daily | weekly | monthly
+  "series": {                              // one entry per bar, like "time"
+    "lsc": [...], "d1": [...], "d2": [...],   // the three lines, each scaled to ±1
+    "illum": [...],                        // share of the disc lit, 0-1
+    "elong": [...],                        // phase: Moon minus Sun longitude, 0 = new, 180 = full
+    "dist": [...], "dec": [...], "sun": [...]  // Moon km, Moon declination °, Sun longitude °
+  },
+  "future": {                              // slots after the last bar; empty intraday
+    "time": ["2026-11-30T00:00:00", ...],  // weekdays (daily), weeks, months
+    "lsc": [...], "d1": [...], "d2": [...], "illum": [...], "elong": [...],
+    "dist": [...], "dec": [...], "sun": [...],
+    "path": [7712.3, ...]                  // projected price: last close × exp(ΔLSC)
+  },
+  "turns": [{"i": 17, "type": "high", "price": 7712.3, "date": "2026-12-22"}],
+  //   i indexes future[]; a reversal of 5% of the path's range confirms each
+  "events": [{"type": "full_moon", "label": "Full moon", "time": "2026-12-24T01:28:09Z",
+              "slot": 271}],
+  //   slot: bars first, then future; the first slot closing at or after the event.
+  //   types: new_moon first_quarter full_moon last_quarter perigee apogee (with
+  //   distance_km) march_equinox june_solstice september_equinox december_solstice
+  "scale": {"lsc": 0.0123, "d1": 0.0009, "d2": 0.0004},  // the divisors: log price, per day, per day²
+  "model": {
+    "days": 2515, "start": "2016-11-28", "end": "2026-11-27", "r2": 0.0041,
+    "cycles": [{"key": "phase", "name": "Lunar phase", "period_days": 29.531,
+                "amplitude_bp": 2.1, "peak_days": 5.4, "zero": "new moon"}, ...],
+    //   amplitude: basis points a day; peak: days after "zero" that the cycle's return is highest
+    "holdout": {"days": 629, "hit_rate": 0.512, "no_skill": 0.503, "corr": 0.011,
+                "noise": 0.080, "up_share": 0.54},
+    "swing_pct": 1.8                       // the projection's range, % of the last close
+  },
+  "params": {...},                         // cycles.AstroParams
+  "notes": ["Lunar-solar fit: 2,515 daily returns ..."],
+  "rules": [{"key": "astro_model", "name": "Lunar-solar cycle (LSC)", "text": "..."}, ...]
+}
+```
+
+Fewer than 250 daily returns, or daily history that will not load, gives
+`{"available": false, "reason": ...}` in place of the block; the rest of the
+payload is unaffected. Intraday charts get the lines and events at their bar
+times and no `future` slots, with a note saying so. Exchange holidays are not
+modelled in future dates.
+
 ## `GET /api/breadth`
 
 Exchange advance/decline internals for the instrument's family — S&P 500
@@ -493,6 +549,7 @@ http://127.0.0.1:8420/?view=chart&chart=ES&chart_range=2Y&chart_interval=1D&char
 | `chart_interval` | `1m` `5m` `15m` `30m` `1h` `4h` `1D` `1W` | URL → stored preference → `1D` |
 | `chart_session` | `rth` `eth` (ETFs) | URL → stored preference → `rth` |
 | `chart_adjust` | `on` `off` (ES, NQ) | URL → stored preference → `on` |
+| `chart_astro` | `on` `off`: the Chart view's Moon/Sun layer | URL → stored preference → `off` |
 
 Apart from `view`, a value in the URL applies to that page and is not stored;
 choosing in the page stores it. `tz` is display only: nothing sent to the

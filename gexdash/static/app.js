@@ -12,7 +12,8 @@
  *
  * Data: /api/meta once at startup; /api/exposure, or the /api/stream SSE feed
  * while live, for the exposure payload both layouts draw; /api/history for
- * the Terminal's candles and indicators; /api/breadth for its market
+ * the Terminal's candles and indicators (with astro=true while Moon/Sun is
+ * on, drawn by astro.js); /api/breadth for its market
  * internals; POST /api/refresh to refetch the chain. Startup is at the bottom
  * of this file: initTechnicals(), setView(), then loadMeta() and the first
  * fetches.
@@ -61,7 +62,9 @@ const state = {
   interval: "1m",
   // Visible window as fractional indices into the bar array. null = fit all.
   zoom: null,
-  indicators: { rsi: true, macd: true, adx: true },
+  // astro: the lunar-solar layer (astro.js). Off unless switched on before;
+  // it is fetched only while on.
+  indicators: { rsi: true, macd: true, adx: true, astro: storeGet("gexdash-astro") === "on" },
   // Last pointer position over the price chart, so the crosshair survives a
   // re-render. null when the pointer is away.
   xhair: null,
@@ -279,6 +282,7 @@ async function loadBars() {
   const q = new URLSearchParams({
     symbol: $("f-symbol").value, range: state.range, interval: state.interval, indicators: "true",
   });
+  if (state.indicators.astro) q.set("astro", "true");
   try {
     const res = await fetch(`/api/history?${q}`);
     state.bars = await res.json();
@@ -559,7 +563,12 @@ function renderChartControls() {
   $("ind-seg").querySelectorAll("button").forEach((b) =>
     b.setAttribute("aria-selected", String(!!state.indicators[b.dataset.ind])));
 
-  const notes = state.bars?.plan?.notes || [];
+  const notes = [...(state.bars?.plan?.notes || [])];
+  // Moon/Sun: the fit's holdout result belongs where the projection is drawn,
+  // and an unavailable block must say why the pressed button drew nothing.
+  const astro = state.indicators.astro ? state.bars?.astro : null;
+  if (astro?.available) notes.push(...(astro.notes || []));
+  else if (astro) notes.push(`Lunar-solar cycle unavailable: ${astro.reason || "no reason given"}`);
   $("plan-note").textContent = notes.join("  ");
 }
 
@@ -612,6 +621,11 @@ function renderPriceChart() {
   const total = bars.close.length;
   const [lo, hi] = visibleWindow(total);
   const n = hi - lo;
+  // Moon/Sun: while the window reaches the latest bar, the lunar-solar
+  // layer's future dates follow it as F extra slots, n .. n+F-1. They are
+  // dates, not candles: nothing that reads OHLC ever sees them.
+  const astro = state.indicators.astro && astroOk(bars.astro) ? bars.astro : null;
+  const F = astro && hi === total ? astroFutureCount(astro, n) : 0;
 
   const W = Math.max(host.clientWidth || 700, 360);
   const H = 442;                      // +30% on the previous 340
@@ -640,6 +654,9 @@ function renderPriceChart() {
   const vTime = slice(bars.time), vVwap = bars.vwap ? slice(bars.vwap) : null;
 
   let yLo = Math.min(...vLow), yHi = Math.max(...vHigh);
+  // The projected path is a price, so it joins the scale.
+  const pathExt = F ? astroPathExtent(astro, lo, total + F, total) : null;
+  if (pathExt) { yLo = Math.min(yLo, pathExt[0]); yHi = Math.max(yHi, pathExt[1]); }
   const span = Math.max(yHi - yLo, 1e-6);
 
   if (fitLevels) {
@@ -661,7 +678,7 @@ function renderPriceChart() {
   // Reserve empty slots past the last candle. The current bar is the one you
   // look at most, and pinning it to the axis leaves nowhere for its tag and
   // no room to read where price is heading.
-  const bw = innerW / (n + RIGHT_PAD_BARS);
+  const bw = innerW / (n + (F ? F + 2 : RIGHT_PAD_BARS));
   const body = Math.max(1, Math.min(bw * 0.62, 9));
   const x = (i) => padL + i * bw + bw / 2;
 
@@ -721,6 +738,17 @@ function renderPriceChart() {
     parts.push(`<polyline class="vwap-line" points="${vVwap.map((v, i) => `${x(i)},${y(v)}`).join(" ")}"/>`);
   }
 
+  // Lunar-solar projection, by series index: the dotted path from the last
+  // close and its labelled highs and lows.
+  if (F) {
+    const gx = (gi) => x(gi - lo);
+    parts.push(astroNowMarkup(total, lo, total + F, gx, bw, padT, padT + innerH));
+    parts.push(...astroProjectionMarkup(astro, {
+      lo, hi: total + F, total, x: gx, y, lastClose: vClose[n - 1], top: padT, bottom: padT + innerH,
+      left: padL, right: padL + innerW,
+    }));
+  }
+
   // In-range levels: the line at the true price, the tag at its laid-out slot.
   tags.forEach((t) => {
     if (t.label !== "VWAP") {
@@ -741,10 +769,11 @@ function renderPriceChart() {
   parts.push(`<g class="last-tag"><rect x="${padL + innerW + 1}" y="${lastY - 7}" width="60" height="14" rx="3"/>
     <text x="${padL + innerW + 5}" y="${lastY + 3.5}">${vClose[n - 1].toFixed(2)}</text></g>`);
 
-  const every = Math.max(1, Math.floor(n / Math.max(4, Math.floor(W / 100))));
+  const every = Math.max(1, Math.floor((n + F) / Math.max(4, Math.floor(W / 100))));
   const daily = ["1D", "1W", "1Mo"].includes(state.bars?.plan?.interval_served);
-  for (let i = 0; i < n; i += every) {
-    parts.push(`<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="middle">${barWhen(vTime[i], daily, false)}</text>`);
+  const slotTime = (i) => (i < n ? vTime[i] : astro.future.time[i - n]);
+  for (let i = 0; i < n + F; i += every) {
+    parts.push(`<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="middle">${barWhen(slotTime(i), daily, false)}</text>`);
   }
 
   parts.push(`<rect class="hit" x="${padL}" y="${padT}" width="${innerW}" height="${innerH}"/>`);
@@ -757,9 +786,10 @@ function renderPriceChart() {
 
   // Geometry the crosshair needs, captured once per render rather than
   // recomputed (or re-rendered) on every pointer move.
+  // `n` bars, then `future` lunar-solar dates: the crosshair reaches both.
   state.chart = {
     W, H, padL, padT, padR, innerW, innerH, n, lo, hi,
-    yLo, yHi, bw, daily,
+    yLo, yHi, bw, daily, total, future: F, astro,
     time: vTime, open: vOpen, high: vHigh, low: vLow, close: vClose,
   };
   attachCrosshair(svg);
@@ -771,7 +801,7 @@ function renderPriceChart() {
   $("price-ohlc").textContent =
     `${n} of ${total} bars` + (bars.synthetic ? "   · synthetic" : "");
 
-  renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw);
+  renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw, F);
   renderReadout(null);
 
   // Every refresh rebuilds this SVG from scratch, which would drop the
@@ -804,7 +834,13 @@ function barAtClientX(svg, clientX) {
   const r = svg.getBoundingClientRect();
   const px = ((clientX - r.left) / r.width) * c.W;
   const i = Math.floor((px - c.padL) / c.bw);
-  return i >= 0 && i < c.n ? i : null;
+  return i >= 0 && i < c.n + (c.future || 0) ? i : null;
+}
+
+/** The stamp of window slot i on the Terminal chart: a bar's time, or past
+ *  the last bar a lunar-solar future date. */
+function chartSlotTime(c, i) {
+  return i < c.n ? c.time[i] : c.astro.future.time[i - c.n];
 }
 
 /** Hover handlers for one price-chart SVG. Attached on every render, since
@@ -857,7 +893,7 @@ function drawCrosshair(svg, clientX, clientY) {
   pt.textContent = price.toFixed(2);
 
   const tg = g.querySelector("[data-xtime]");
-  const label = barWhen(c.time[i], c.daily, false);
+  const label = barWhen(chartSlotTime(c, i), c.daily, false);
   const tw = label.length * 6 + 8;
   tg.querySelector("rect").setAttribute("x", Math.min(Math.max(cx - tw / 2, c.padL), c.padL + c.innerW - tw));
   tg.querySelector("rect").setAttribute("y", c.padT + c.innerH + 2);
@@ -900,8 +936,7 @@ function renderReadout(index) {
   box.hidden = false;
 
   const i = index == null ? c.n - 1 : index;
-  const when = barWhen(c.time[i], c.daily, true);
-  const dir = c.close[i] >= c.open[i] ? "up" : "dn";
+  const when = barWhen(chartSlotTime(c, i), c.daily, true);
 
   // Indicators are indexed over the whole series; the chart shows a window.
   const ind = state.bars?.indicators || {};
@@ -914,6 +949,16 @@ function renderReadout(index) {
   const cell = (k, v, cls = "") =>
     `<span><span class="r-k">${k}</span> <span class="r-v ${cls}">${v}</span></span>`;
   const swatch = (colour) => `<span class="r-dot" style="background:${colour}"></span>`;
+
+  // A future date: no candle, just the projection and the Moon.
+  if (i >= c.n) {
+    const s = astroSlotInfo(c.astro, c.lo + i, c.total);
+    box.innerHTML = `<div class="r-row"><span class="r-when">${when}</span> <span class="r-k">projected</span></div>` +
+      (s?.path !== null && s?.path !== undefined ? `<div class="r-row">${cell("Path", s.path.toFixed(2))}</div>` : "") +
+      astroReadoutRow(c, i, cell, swatch);
+    return;
+  }
+  const dir = c.close[i] >= c.open[i] ? "up" : "dn";
 
   const rows = [
     `<div class="r-row"><span class="r-when">${when}</span></div>`,
@@ -928,7 +973,20 @@ function renderReadout(index) {
       `</div>`
     );
   }
+  if (c.astro) rows.push(astroReadoutRow(c, i, cell, swatch));
   box.innerHTML = rows.join("");
+}
+
+/** The readout's lunar-solar rows for window slot i: the three lines, then
+ *  the Moon's phase, share lit and distance. */
+function astroReadoutRow(c, i, cell, swatch) {
+  const s = astroSlotInfo(c.astro, c.lo + i, c.total);
+  if (!s) return "";
+  const lines = ASTRO_LINES.map((l) => `<span>${swatch(l.colour)}${cell(l.label, astroSigned(s[l.key]))}</span>`).join("");
+  const moon = s.phase === null ? "" :
+    `<div class="r-row">${cell(s.phase, `${Math.round((s.illum ?? 0) * 100)}% lit`)}` +
+    `${s.dist === null ? "" : cell("Moon", `${Math.round(s.dist).toLocaleString("en-US")} km`)}</div>`;
+  return `<div class="r-row">${lines}</div>${moon}`;
 }
 
 /** Same x on every indicator pane, so the panes read as one chart. */
@@ -1035,7 +1093,7 @@ const IND_SPECS = [
  *  window and slot width, so a bar sits at the same x in every pane. Values
  *  are /api/history's `indicators`, indexed over the whole series and sliced
  *  to [lo, hi). A pane with no finite values is left out. */
-function renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw) {
+function renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw, future = 0) {
   const host = $("indicator-panes");
   const ind = state.bars?.indicators;
   if (!ind) { host.innerHTML = ""; return; }
@@ -1111,7 +1169,27 @@ function renderIndicatorPanes(lo, hi, W, padL, padR, innerW, bw) {
     blocks.push(`<div class="ind-pane"><svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${spec.title}">${parts.join("")}</svg></div>`);
   });
 
+  const astro = state.indicators.astro && astroOk(state.bars?.astro) ? state.bars.astro : null;
+  if (astro) blocks.push(renderAstroPane(astro, lo, hi, future, W, padL, innerW, bw));
   host.innerHTML = blocks.join("");
+}
+
+/** The Terminal's lunar-solar pane (astro.js draws it): the bars in [lo, hi)
+ *  and then `future` future dates, at the price chart's slot width. The title
+ *  holds the latest bar's values; the readout follows the cursor. */
+function renderAstroPane(a, lo, hi, future, W, padL, innerW, bw) {
+  const H = 132, total = state.bars.close.length;
+  const gx = (gi) => padL + (gi - lo) * bw + bw / 2;
+  const pane = astroPaneMarkup(a, {
+    lo, hi: hi + future, total, x: gx, bw, left: padL, right: padL + innerW, top: 13, bottom: H - 4,
+  });
+  const parts = pane.parts;
+  [[1, "+1"], [-1, "−1"]].forEach(([v, label]) =>
+    parts.push(`<text class="axis-label" x="${padL + innerW + 5}" y="${(pane.y(v) + 3).toFixed(1)}">${label}</text>`));
+  parts.push(`<text class="ind-title" x="${padL}" y="9">Lunar–solar cycle</text>`);
+  parts.push(`<text class="ind-title" x="${padL + innerW - 4}" y="9" text-anchor="end">${astroLineSpans(a, hi - 1, total)}</text>`);
+  parts.push(`<g class="xhair" data-xhair style="display:none"><line data-xv y1="0" y2="${H}"/></g>`);
+  return `<div class="ind-pane"><svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Lunar–solar cycle">${parts.join("")}</svg></div>`;
 }
 
 /* ------------------- horizontal tabbed exposure by strike --------------- */
@@ -1714,7 +1792,16 @@ $("sel-range").addEventListener("change", (e) => {
 $("sel-interval").addEventListener("change", (e) => { state.interval = e.target.value; loadBars(); });
 $("ind-seg").querySelectorAll("button").forEach((b) =>
   b.addEventListener("click", () => {
-    state.indicators[b.dataset.ind] = !state.indicators[b.dataset.ind];
+    const key = b.dataset.ind;
+    state.indicators[key] = !state.indicators[key];
+    if (key === "astro") {
+      storeSet("gexdash-astro", state.indicators.astro ? "on" : "off");
+      // The block comes only with astro=true; fetch it the first time.
+      if (state.indicators.astro && state.bars?.available && !state.bars.astro) {
+        renderChartControls();
+        return loadBars();
+      }
+    }
     renderChartControls(); renderPriceChart();
   }));
 

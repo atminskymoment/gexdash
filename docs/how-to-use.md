@@ -137,7 +137,9 @@ the dealer levels in the middle, exposure by strike beside them.
 8. **Layers.** *Levels* draws the dealer levels; *Fit levels* stretches the
    price scale to include every level, even far ones; *VWAP*, *Crosshair* and
    *Readout* toggle what they say. RSI, MACD and ADX/DI toggle the panes
-   underneath.
+   underneath, and **Moon/Sun** adds the lunar-solar layer
+   ([below](#moon-and-sun)): its pane, the projected path on daily, weekly
+   and monthly bars, and the Moon in the readout.
 9. **Dealer levels** on the price chart: call wall, put wall, gamma flip, max
    pain, the largest positive and negative gamma strikes, and the volume
    point of control. A level outside the visible range is pinned to the edge
@@ -202,7 +204,8 @@ header.
    1D, 5D and 10D count trading sessions, so 1D before Monday's open is
    Friday's session.
 3. **Layers.** SMMA 20/50/100/200, EMA 9, Bollinger 20/2 and 20/3, ranges,
-   levels, volume profile, signals and Supertrend each toggle on and off.
+   levels, volume profile, signals, Supertrend and Moon/Sun each toggle on and
+   off.
 4. **Zoom.** **−**, **+** and **⤢** (fit). The mouse wheel zooms over the
    price pane; drag to pan.
 5. **Legend.** Open, high, low, close and change for the bar under the
@@ -241,6 +244,32 @@ at the session open (9:30, 10:30 … ET for ETFs; 18:00, 22:00 … ET for
 futures). Intraday charts refresh every 30 seconds.
 
 ![QQQ, five days of 15-minute bars](images/chart-intraday.png)
+
+### Moon and Sun
+
+**Moon/Sun**, on the Chart view's layer buttons and beside RSI, MACD and ADX/DI
+on the Terminal, adds the lunar-solar layer. It is off until you switch it on,
+and then remembered.
+
+- The chart runs on past the last bar into **future dates**. A dashed line
+  marks today.
+- A **dotted path** from the last close projects price, labelled "High Dec 22",
+  "Low Dec 31" and so on at its turns. This needs daily, weekly or monthly
+  bars; intraday charts get the pane alone.
+- A **Lunar–solar cycle pane** draws LSC (orange) and its 1st (blue) and 2nd
+  (green) derivatives, solid over the bars and dotted into the future. Each is
+  scaled to ±1. Icons along its top mark new ●, quarter ◐ ◑ and full ○ moons,
+  ☉ equinoxes and solstices, and P/A perigee and apogee. Hover one for its
+  time.
+- The **legend** (or the Terminal's readout) adds the Moon's phase, share lit,
+  distance and declination, and the next new or full moon. Hover a future date
+  to read its projected price.
+
+The model is gexdash's own, listed with the other rules under the chart. Read
+the note above the chart before the path. It reports how the model did on the
+last quarter of the history, which it was not fitted to, against calls with no
+skill. If the correlation there sits inside its noise band, the path is a
+drawing of the fit, not a forecast.
 
 ### Futures and contract rolls
 
@@ -294,6 +323,7 @@ Every screen can be linked. A link's parameters apply to that page; only
 | `chart_range`, `chart_interval` | as in the table above | `&chart_range=2Y&chart_interval=1W` |
 | `chart_session` | `rth` (regular hours) or `eth` (extended), ETFs only | `&chart_session=eth` |
 | `chart_adjust` | `on` or `off`, ES and NQ only | `&chart_adjust=off` |
+| `chart_astro` | `on` or `off`: the Chart view's Moon/Sun layer | `&chart_astro=on` |
 
 The HTTP API behind the dashboard is documented in [api.md](api.md), and
 interactive OpenAPI docs are served at `/api/docs` while it runs.

@@ -304,7 +304,85 @@ With no open interest the reading is withheld entirely. Interpreting a surface
 of zeros would produce a fluent description of a market that was never
 measured.
 
-## 11. What this cannot do
+## 11. The lunar-solar cycle
+
+The Moon/Sun layer on both price charts (`cycles.py`, `astro.py`) is a model
+of a kind this project otherwise avoids: one that projects price. It is held
+to the same rule as the signal layer. Every step is written down and shipped
+with the payload, and its out-of-sample record is printed where the projection
+is drawn.
+
+**The sky.** Positions come from Meeus's low-precision theory: the Sun from
+chapter 25, and the Moon from chapter 47 with all 60 longitude/distance and 60
+latitude terms. The worked examples are pinned in the tests. Against PyEphem
+over 2016-2030 the largest differences were 94 seconds for lunar phases, 12
+minutes for equinoxes and solstices, and 15 minutes and 10 km for perigee and
+apogee. On bars of a day or longer all of that is invisible. Delta T is fixed
+at 69 s.
+
+**The fit.** Daily log returns are regressed on the cosine and sine of five
+angles, each read at the session's 16:00 ET close:
+
+| Cycle | Angle | Period | Zero at |
+|---|---|---|---|
+| Lunar phase | elongation | 29.53 d | new moon |
+| Spring-neap tide | 2 × elongation | 14.77 d | new or full moon |
+| Lunar distance | the Moon's mean anomaly | 27.55 d | perigee |
+| Lunar declination | the Moon's longitude | 27.32 d | crossing the equator northward |
+| Solar year | the Sun's longitude | 365.24 d | March equinox |
+
+These are the actual angles, so the Moon's uneven motion is in the inputs;
+they are not sine waves of fixed period. Features are centred on the fit
+sample, so the cyclical part sums to zero over it and cannot absorb the drift.
+The fit is ridge regression with a penalty of 0.02 per observation. Features
+have variance ½, so that shrinks an isolated cycle by about 4%. Its real job
+is the two lunar months 27.32 and 27.55 days long, which beat over 8.85 years
+and would otherwise trade off with large opposite coefficients.
+
+Futures are fitted on the raw front-month closes, with the return across each
+contract change left out. Every other day's return is then exact, which a
+back-adjusted series would not give: additive adjustment shifts each older
+segment by a constant, and that rescales every earlier return.
+
+**Always daily.** Weekly bars would put the 14.77-day term at the sampling
+limit, and intraday history spans too few lunar months to fit. One fit is made
+on daily bars and evaluated at whatever times a chart shows.
+
+**The lines.** LSC is the fitted cyclical return summed over trading days and
+centred. The 1st derivative is that return per trading day. The 2nd is its
+rate of change, a central difference over ±6 hours of continuous time:
+differencing consecutive sessions would triple every Monday's step, which
+spans a weekend. Each line is divided by its own largest absolute value over
+the fitted span and horizon, so the three share one ±1 pane. Their zero
+crossings carry the information: LSC turns where the 1st derivative crosses
+zero. Their relative heights do not, and `scale` gives the divisors.
+
+**The projection** is the last close times exp(ΔLSC), at the fitted amplitude,
+and the note states its range as a percentage of the last close. It is not
+rescaled to look like a target. A turn is labelled once the path
+has come back from it by 5% of its range (a zigzag), so a wiggle on a slope is
+not a turn.
+
+**In-sample over the bars.** The solid lines over past bars come from the
+fit over the whole history, which has seen those returns. Any match between
+past LSC turns and past price turns is therefore partly fitted, and is no
+evidence the model works.
+
+**The holdout** is the part to read first, and the only out-of-sample evidence. The model is fitted to the first
+75% of the history and scored on the last 25%. The direction hit rate is not
+compared with 50%: a model that mostly says "up" scores above half in a rising
+market with no information at all. The comparison is with calls made blind to
+the day in the same proportion, `u·a + (1 − u)(1 − a)` for up-call share `u`
+and up-day share `a`. The correlation is compared with ±2/√n, inside which
+zero lands 95% of the time. A correlation inside that band means the cycles
+explained nothing the model had not seen, and the projection is then a
+drawing of the fit, not a forecast.
+
+Published work on lunar effects reports small return differences around new
+and full moons (Dichev & Janes 2003; Yuan, Zheng & Zhu 2006). The model leaves
+their sign and size to the data rather than building them in.
+
+## 12. What this cannot do
 
 | Tier | Metrics | Blocker |
 |---|---|---|

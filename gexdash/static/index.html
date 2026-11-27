@@ -120,6 +120,7 @@
           <button data-ind="rsi">RSI</button>
           <button data-ind="macd">MACD</button>
           <button data-ind="adx">ADX/DI</button>
+          <button data-ind="astro" title="Lunar-solar cycle: its pane, the projected path and the Moon and Sun events">Moon/Sun</button>
         </div>
       </div>
       <div class="muted small" id="plan-note"></div>
@@ -304,8 +305,9 @@
 
 <div class="tooltip" id="tooltip"></div>
 
-<!-- technicals.js first: it only defines functions; app.js runs startup. -->
+<!-- tz.js, astro.js and technicals.js only define functions; app.js runs startup. -->
 <script src="/static/tz.js"></script>
+<script src="/static/astro.js"></script>
 <script src="/static/technicals.js"></script>
 <script src="/static/app.js"></script>
 </body>

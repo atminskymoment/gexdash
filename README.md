@@ -50,6 +50,13 @@ Switch in the header, or link directly with `?view=`:
 | **Columns** | Market bias / spot & levels / zone analysis / signal chart, four panels | Reading the whole exposure surface at once |
 | **Chart** | Full-width chart, 1-minute to weekly: SMMA 20/50/100/200, EMA 9, Bollinger 20/2 + 20/3, Supertrend, volume + volume profile, RSI, MACD, VAMS ribbons, ranges and signals | Reading trend and position for QQQ, SPY, USO, ES, NQ |
 
+Both price charts, Terminal and Chart, also take a **Moon/Sun** toggle: the
+lunar-solar cycle with its 1st and 2nd derivatives, drawn past the last bar
+into future dates, a dotted projected path with its highs and lows labelled,
+and the new and full moons, perigees, equinoxes and solstices. See
+[below](#the-lunar-solar-cycle). The Columns signal chart is plotted by strike,
+not by time, so the toggle does not apply to it.
+
 Terminal and Columns render the same `/api/exposure` payload and share their
 chart primitives, so the two cannot disagree. Chart reads only
 `/api/technicals` and has its own symbol tabs, so it works for USO, and with no
@@ -91,6 +98,8 @@ placeholders with the reason — never as a plausible-looking number.
 | Chart view: SMMA 20/50/100/200, EMA 9, Bollinger 20/2 + 20/3, RSI 14, MACD 12/26/9, volume profile + PoC, 3M/52W levels | computed over the feed's **full history** and then trimmed, so SMMA 200 is converged at the left edge |
 | Chart view: VAMS state, range breakouts, BUY / ADD / TRIM / SELL | **gexdash's own written rules**, shown under the chart. They are not the private script the reference chart uses |
 | Chart view: earnings (`E`) markers | not drawn: ETFs and index futures do not report earnings |
+| Sun and Moon positions; new, quarter and full moons, perigee and apogee, equinoxes and solstices | computed from a Meeus ephemeris, past and future, no data files; phases within 2 minutes of PyEphem |
+| Lunar-solar cycle (LSC), its 1st and 2nd derivative, projected path with High/Low dates | **gexdash's own model**, fitted to the symbol's daily returns and tested on a holdout it was not fitted to. It is not the reference chart's PPM2 script, and the projection has not shown skill unless its holdout says so |
 
 ---
 
@@ -339,6 +348,41 @@ All of these thresholds are in `technicals.TechParams` and are echoed in the
 payload. If you have the source of the script you are replicating, replace the
 rules there. Nothing else depends on them.
 
+### The lunar-solar cycle
+
+**Moon/Sun** is a toggle on both price charts. It is off by default and
+remembered once switched on. It draws three things:
+
+- **A pane** with the lunar-solar cycle (LSC) and its 1st and 2nd
+  derivatives. They are solid over the bars and dotted past the last one,
+  because past it they are computed from where the Sun and Moon will be, not
+  observed. Icons along the top mark new, quarter and full moons (☉ for
+  equinoxes and solstices, P and A for perigee and apogee), each with its
+  time in a tooltip.
+- **A projected path** on the price pane, dotted from the last close, with
+  "High Dec 22" or "Low Dec 31" at each turn. Daily, weekly and monthly bars
+  only.
+- **The Moon in the legend:** phase, share lit, distance, declination and the
+  next new or full moon. Hovering a future date shows its projected price.
+
+The model is gexdash's own, written out under the chart beside the other
+rules:
+
+| Step | Rule |
+|---|---|
+| Fit | daily log returns (up to 10 years, whatever the chart's bar size) regressed, ridge 0.02 on centred features, on cos/sin of five ephemeris angles at each 16:00 ET close: lunar phase (29.53 d), its second harmonic for spring and neap tides (14.77 d), lunar distance (27.55 d), lunar declination (27.32 d), the Sun's longitude (the year). Futures fit on the raw front month, with each roll day's return left out |
+| LSC | the fitted cyclical return accumulated over trading days: the part of the price the cycles explain. Over past bars it is in-sample, so it matches past turns partly by construction |
+| 1st / 2nd derivative | the fitted cyclical return per trading day, and its rate of change, read at each bar's own time. Each line is scaled to its own largest swing, so all three run ±1 |
+| Projection | last close × exp(change in LSC), at the **fitted** amplitude, not rescaled. A high or low is labelled where the path reverses by 5% of its range. Future dates are weekdays; holidays are not modelled |
+| Holdout | fitted on the first 75% of the history, tested on the last 25%. The note gives the direction hit rate beside what calls with **no skill** would score with the same mix of up and down calls, and the correlation beside its noise band, ±2/√n |
+
+The charts this was modelled on draw a "PPM2" line from a private script.
+This is not a reconstruction of it. Read the holdout before the path. Where
+its correlation sits inside the noise band, the cycles explained nothing out
+of sample, and the projection is a drawing of the fit, not a forecast. On the
+synthetic provider's random walk it sits inside, as it should. Thresholds are in
+`cycles.AstroParams`; see [methodology §11](docs/methodology.md#11-the-lunar-solar-cycle).
+
 ---
 
 ## Layout
@@ -349,6 +393,8 @@ gexdash/
   history.py      chart range/interval vocabulary, provider mapping, aggregation
   indicators.py   RSI, MACD, ADX/DI, SMMA, Bollinger, ATR, Supertrend -- Wilder where Wilder specified it
   technicals.py   Chart view: overlays, profile, levels, VAMS + signal rules, sessions, warm-up
+  astro.py        Sun and Moon ephemeris (Meeus), lunar phases, perigee/apogee, equinoxes/solstices
+  cycles.py       the lunar-solar cycle: daily fit, derivatives, projection, turns, holdout test
   futures.py      contract-change roll dates and back-adjustment (thinkorswim's definition)
   breadth.py      exchange market internals from the $ADVN/$DECN symbol family
   greeks.py       vectorized Black-Scholes; Black-76 via the q = r identity
@@ -362,12 +408,12 @@ gexdash/
   crosscheck.py   diff our greeks against the provider's
   server.py       FastAPI + SSE
   providers/      mock (synthetic) and schwab
-  static/         dashboard + technicals.js + tz.js — no build step, no CDN, no chart library
+  static/         dashboard + technicals.js + astro.js + tz.js — no build step, no CDN, no chart library
 docs/             how-to-use · api · methodology · data-sources · architecture
   images/         the guide's screenshots (synthetic data)
   media/          the narrated tour (MP4 + subtitles) and the README preview GIF
 tests/            greeks · american · exposure · instruments · providers · crosscheck · server
-                  · history · bars · technicals · futures · breadth · tz · ...
+                  · history · bars · technicals · futures · breadth · tz · astro · cycles · ...
 ```
 
 A ~2000-contract chain re-prices in well under a millisecond. A full
@@ -380,7 +426,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 487 tests, ~13s
+python -m pytest tests/ -q      # 535 tests, ~14s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76

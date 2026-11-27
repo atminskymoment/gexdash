@@ -763,7 +763,9 @@ async def api_auth_logout():
 @app.get("/connect")
 async def connect_page():
     """Browser page for connecting a Schwab account: open the consent link, then paste the redirect URL."""
-    return FileResponse(STATIC_DIR / "connect.html")
+    # no-cache, as for the dashboard: a cached page beside updated styles
+    # renders wrong without failing.
+    return FileResponse(STATIC_DIR / "connect.html", headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.get("/api/breadth")

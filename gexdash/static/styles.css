@@ -8,6 +8,12 @@
  *   light      CVD dE 24.7                CVD dE 21.6      on #fcfcfb
  *   dark       CVD dE 26.8                CVD dE 19.2      on #1a1a19
  *
+ * The app's chrome follows the AffectUI design system (affectui.com):
+ * its neutral surfaces, inks, lines, radii, shadows, focus ring and
+ * components, recreated here in plain CSS. Its surfaces are #ffffff light
+ * and #19191b dark; both data pairs above were re-run against them and
+ * still pass all six checks. The data colours are unchanged.
+ *
  * Note the deliberate departure from trading convention: calls/puts are
  * blue/orange, not green/red. Green-vs-red is the single worst pair for
  * colour-vision deficiency, and it is the one distinction on this page that
@@ -25,14 +31,44 @@
 :root {
   color-scheme: light;
 
-  --surface-1: #fcfcfb;
-  --page: #f9f9f7;
-  --text-primary: #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted: #898781;
-  --gridline: #e1e0d9;
-  --baseline: #c3c2b7;
-  --border: rgba(11, 11, 11, 0.10);
+  /* AffectUI neutrals: surface, page tray, inks, hairline and edge. */
+  --surface-1: #ffffff;
+  --page: #f4f4f5;
+  --text-primary: #171717;
+  --text-secondary: #404040;
+  --text-muted: #737373;
+  --gridline: #ececec;
+  --baseline: #d4d4d8;
+  --border: #ececec;
+  --edge: #d4d4d8;
+  --edge-focus: #b4b4bb;
+  --tray: #f0f0f0;
+  --glow: #f4f4f5;
+  --pressed: #e8e8e8;
+  --pill: #ffffff;
+  --pill-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.08), 0 2px 8px -2px rgba(0, 0, 0, 0.06);
+  --card-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --menu-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 18px 40px -12px rgba(0, 0, 0, 0.18), 0 4px 12px -4px rgba(0, 0, 0, 0.06);
+  --field-shadow: 0 0 0 1px #e6e6e8, 0 1px 2px rgba(0, 0, 0, 0.04);
+  --btn-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --btn-bg: #ffffff; --btn-line: #e5e5e5;
+  --menu-ink: #262626; --placeholder: #b5b5b5;
+  --switch-off: #e2e2e2; --switch-off-hover: #d4d4d8;
+  --switch-on-thumb: #ffffff; --switch-thumb-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --kbd-edge: #e3e3e3; --kbd-depth: #d9d9d9;
+  --btn-dark-top: #323137; --btn-dark-bottom: #201e25;
+  --btn-dark-hover-top: #3c3b42; --btn-dark-hover-bottom: #29272f;
+  --btn-dark-ink: #fafafa; --btn-dark-ring: #0d0d0d;
+  --tip-bg: #171717; --tip-ink: #ffffff;
+  --focus: rgba(0, 96, 226, 0.7);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* AffectUI badge tones: a soft tint with its text in the darker shade. */
+  --tone-neutral-bg: #f0f0f0; --tone-neutral-fg: #616161;
+  --tone-info-bg: #eaf1ff;    --tone-info-fg: #2456d6;
+  --tone-success-bg: #e6f6ed; --tone-success-fg: #1e8a4f;
+  --tone-warning-bg: #fff1e0; --tone-warning-fg: #b25e00;
+  --tone-danger-bg: #fdecea;  --tone-danger-fg: #c4320a;
+  --tone-purple-bg: #f4ebfd;  --tone-purple-fg: #8a35d6;
 
   /* categorical */
   --series-call: #2a78d6;
@@ -41,7 +77,7 @@
   /* diverging poles for signed exposure */
   --pos: #2a78d6;
   --neg: #e34948;
-  --mid: #f0efec;
+  --mid: #f0f0f0;
 
   /* VWAP: violet, slot 7 of the validated categorical theme — distinct
      from the call/put and pos/neg pairs already on screen. */
@@ -98,9 +134,16 @@
   --serious: #ec835a;
   --critical: #d03b3b;
 
-  --radius: 10px;
+  /* AffectUI radii: cards 16, fields and small buttons 10, rows 9, tips 8. */
+  --radius: 16px;
+  --radius-field: 10px;
+  --radius-row: 9px;
   --gap: 14px;
-  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --nav-w: 216px;
+  --nav-rail: 60px;
+  /* Inter where it is installed; nothing is fetched (no CDN), so elsewhere
+     the system face stands in. */
+  --font: "Inter", "InterVariable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
@@ -110,19 +153,46 @@
      keeps this block's specificity at zero so the toggle scope always wins. */
   :root:where(:not([data-theme="light"])) {
     color-scheme: dark;
-    --surface-1: #1a1a19;
-    --page: #0d0d0d;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --gridline: #2c2c2a;
-    --baseline: #383835;
-    --border: rgba(255, 255, 255, 0.10);
+    --surface-1: #19191b;
+    --page: #111113;
+    --text-primary: #ededed;
+    --text-secondary: #c8c8cc;
+    --text-muted: #8f8f8f;
+    --gridline: #2a2a2e;
+    --baseline: #3a3a40;
+    --border: #2a2a2e;
+    --edge: #3a3a40;
+    --edge-focus: #4e4e55;
+    --tray: #111113;
+    --glow: #26262a;
+    --pressed: rgba(255, 255, 255, 0.1);
+    --pill: #26262a;
+    --pill-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.4);
+    --card-shadow: 0 0 0 1px var(--border);
+    --menu-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 18px 40px -12px rgba(0, 0, 0, 0.6);
+    --field-shadow: 0 0 0 1px #2a2a2e;
+    --btn-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --btn-bg: #232326; --btn-line: rgba(255, 255, 255, 0.1);
+    --menu-ink: #e4e4e7; --placeholder: #5c5c63;
+    --switch-off: #3a3a3f; --switch-off-hover: #46464c;
+    --switch-on-thumb: #161618; --switch-thumb-shadow: none;
+    --kbd-edge: #34343a; --kbd-depth: #1a1a1d;
+    --btn-dark-top: #f4f4f5; --btn-dark-bottom: #e4e4e7;
+    --btn-dark-hover-top: #ffffff; --btn-dark-hover-bottom: #ececef;
+    --btn-dark-ink: #121213; --btn-dark-ring: rgba(0, 0, 0, 0.6);
+    --tip-bg: #fafafa; --tip-ink: #171717;
+    --focus: rgba(77, 141, 255, 0.8);
+    --tone-neutral-bg: #26262a; --tone-neutral-fg: #a1a1a6;
+    --tone-info-bg: #16243f;    --tone-info-fg: #8ab4ff;
+    --tone-success-bg: #123020; --tone-success-fg: #5fc88a;
+    --tone-warning-bg: #3a2610; --tone-warning-fg: #ffb35c;
+    --tone-danger-bg: #3b1c14;  --tone-danger-fg: #ff8a7a;
+    --tone-purple-bg: #2a1c3d;  --tone-purple-fg: #c9a2f5;
     --series-call: #3987e5;
     --series-put: #d95926;
     --pos: #3987e5;
     --neg: #e66767;
-    --mid: #383835;
+    --mid: #26262a;
     --series-violet: #9085e9;
     --series-gold: #c98500;
     --ma-50: #199e70;
@@ -143,19 +213,46 @@
   color-scheme: dark;
   --series-violet: #9085e9;
   --series-gold: #c98500;
-  --surface-1: #1a1a19;
-  --page: #0d0d0d;
-  --text-primary: #ffffff;
-  --text-secondary: #c3c2b7;
-  --text-muted: #898781;
-  --gridline: #2c2c2a;
-  --baseline: #383835;
-  --border: rgba(255, 255, 255, 0.10);
+  --surface-1: #19191b;
+  --page: #111113;
+  --text-primary: #ededed;
+  --text-secondary: #c8c8cc;
+  --text-muted: #8f8f8f;
+  --gridline: #2a2a2e;
+  --baseline: #3a3a40;
+  --border: #2a2a2e;
+  --edge: #3a3a40;
+  --edge-focus: #4e4e55;
+  --tray: #111113;
+  --glow: #26262a;
+  --pressed: rgba(255, 255, 255, 0.1);
+  --pill: #26262a;
+  --pill-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --card-shadow: 0 0 0 1px var(--border);
+  --menu-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 18px 40px -12px rgba(0, 0, 0, 0.6);
+  --field-shadow: 0 0 0 1px #2a2a2e;
+  --btn-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --btn-bg: #232326; --btn-line: rgba(255, 255, 255, 0.1);
+  --menu-ink: #e4e4e7; --placeholder: #5c5c63;
+  --switch-off: #3a3a3f; --switch-off-hover: #46464c;
+  --switch-on-thumb: #161618; --switch-thumb-shadow: none;
+  --kbd-edge: #34343a; --kbd-depth: #1a1a1d;
+  --btn-dark-top: #f4f4f5; --btn-dark-bottom: #e4e4e7;
+  --btn-dark-hover-top: #ffffff; --btn-dark-hover-bottom: #ececef;
+  --btn-dark-ink: #121213; --btn-dark-ring: rgba(0, 0, 0, 0.6);
+  --tip-bg: #fafafa; --tip-ink: #171717;
+  --focus: rgba(77, 141, 255, 0.8);
+  --tone-neutral-bg: #26262a; --tone-neutral-fg: #a1a1a6;
+  --tone-info-bg: #16243f;    --tone-info-fg: #8ab4ff;
+  --tone-success-bg: #123020; --tone-success-fg: #5fc88a;
+  --tone-warning-bg: #3a2610; --tone-warning-fg: #ffb35c;
+  --tone-danger-bg: #3b1c14;  --tone-danger-fg: #ff8a7a;
+  --tone-purple-bg: #2a1c3d;  --tone-purple-fg: #c9a2f5;
   --series-call: #3987e5;
   --series-put: #d95926;
   --pos: #3987e5;
   --neg: #e66767;
-  --mid: #383835;
+  --mid: #26262a;
   --ma-50: #199e70;
   --ma-100: #d95926;
   --ma-200: #9085e9;
@@ -187,91 +284,262 @@ body {
 
 a { color: var(--series-call); }
 
-/* ---------------------------------------------------------------- header */
+/* ============================================================ app shell */
+/* AffectUI: a sidebar for where you are, a slim top bar for what you are
+   looking at, a toolbar for how it is computed. The sidebar snaps between
+   expanded and rail: animating its width would re-lay the charts out on
+   every frame. */
 
-header.top {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  padding: 9px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-1);
-}
-
-.brand { font-weight: 680; letter-spacing: 0.14em; text-transform: uppercase; font-size: 13px; }
-.ver { font-size: 11px; color: var(--text-muted); }
-.spacer { flex: 1 1 auto; }
-.grow { flex: 1 1 auto; }
-
-.clock { line-height: 1.15; }
-.clock .k { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); }
-.clock .v { font-size: 14px; font-weight: 620; font-variant-numeric: tabular-nums; }
-.clock .et { font-size: 9px; color: var(--text-muted); }
-/* The zone tag doubles as the picker: a native select laid over it, so the
-   keyboard, screen readers and the OS menu all work, and the header stays
-   one tag wide however long the zone names are. */
-.tz-pick {
-  position: relative; display: inline-flex; align-items: baseline; gap: 2px;
-  margin-left: 2px; padding: 0 3px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer;
-}
-.tz-pick .et { font-weight: 560; }
-.tz-pick .caret { font-size: 9px; color: var(--text-muted); }
-.tz-pick:hover { background: var(--mid); }
-.tz-pick:hover .et { color: var(--text-secondary); }
-.tz-pick:has(select:focus-visible) { outline: 2px solid var(--series-call); outline-offset: 1px; }
-.tz-pick select {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  opacity: 0; cursor: pointer; font-size: 12px;
-}
+.app { display: grid; grid-template-columns: var(--nav-w) minmax(0, 1fr); min-height: 100vh; }
+.app.rail { grid-template-columns: var(--nav-rail) minmax(0, 1fr); }
+.main { min-width: 0; display: flex; flex-direction: column; }
+.grow, .spacer { flex: 1 1 auto; }
 .muted { color: var(--text-muted); font-weight: 400; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-.phase { text-transform: uppercase; font-size: 12px; letter-spacing: 0.05em; }
-.phase.open { color: var(--good); }
-.phase.pre-market, .phase.after-hours { color: var(--warning); }
+/* Icons keep their own size: the charts' `svg { width: 100% }` must not reach them. */
+.ico, .draw-btn svg, .draw-menu svg { display: inline-block; flex: 0 0 auto; width: 18px; height: 18px; overflow: visible; }
+.ico { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---- sidebar ---- */
+.sidenav {
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px; padding: 12px 10px;
+  border-right: 1px solid var(--border); background: var(--page);
+}
+.sidenav-brand { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 9px; margin-bottom: 8px; }
+.brand-mark {
+  display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; flex: 0 0 auto;
+  color: var(--btn-dark-ink); background: linear-gradient(var(--btn-dark-top), var(--btn-dark-bottom));
+  box-shadow: 0 0 0 1px var(--btn-dark-ring), 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.brand-mark .ico { width: 16px; height: 16px; }
+.brand { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; color: var(--text-primary); }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav-item {
+  display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%; height: 36px; min-height: 0; padding: 0 10px;
+  border: 0; border-radius: var(--radius-row); background: transparent; box-shadow: none;
+  color: var(--text-secondary); font: 500 13.5px/20px var(--font); text-decoration: none; text-align: left; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.nav-item .ico { color: var(--text-muted); transition: color 120ms ease; }
+.nav-item:hover { background: var(--glow); color: var(--text-primary); }
+.nav-item:hover .ico { color: var(--text-primary); }
+.nav-item[aria-current="page"] { background: var(--pill); box-shadow: var(--pill-shadow); color: var(--text-primary); font-weight: 600; }
+.nav-item[aria-current="page"] .ico { color: var(--text-primary); }
+.nav-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-sep { height: 1px; background: var(--border); margin: 8px 4px; }
+.nav-collapse { color: var(--text-muted); }
+.app.rail .nav-label, .app.rail .sidenav-brand .brand { display: none; }
+.app.rail .nav-item { justify-content: center; padding: 0; }
+.app.rail .sidenav-brand { justify-content: center; padding: 0; }
+
+/* ---- top bar ---- */
+.topbar {
+  position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 14px;
+  height: 56px; padding: 0 20px; background: var(--page); border-bottom: 1px solid var(--border);
+}
+.search { position: relative; width: min(300px, 40vw); }
+.field-box {
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 8px 0 11px;
+  background: var(--surface-1); border-radius: var(--radius-field); box-shadow: var(--field-shadow);
+  color: var(--text-muted); cursor: text; transition: box-shadow 160ms ease;
+}
+.field-box:hover { box-shadow: 0 0 0 1px var(--edge), 0 1px 2px rgba(0, 0, 0, 0.04); }
+.field-box:focus-within { box-shadow: 0 0 0 1px var(--edge-focus), 0 1px 2px rgba(0, 0, 0, 0.04); }
+.field-box .ico { width: 16px; height: 16px; }
+.field-box input {
+  flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; padding: 0;
+  font: 600 13.5px var(--font); color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.01em;
+}
+.field-box input::placeholder { text-transform: none; font-weight: 500; color: var(--placeholder); letter-spacing: 0; }
+.field-box:focus-within .kbd { visibility: hidden; }
+
+.clockline { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+.clock-time { font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.dotsep { color: var(--text-muted); }
+/* The zone tag doubles as the picker: a native select laid over it, so the
+   keyboard, screen readers and the OS menu all work, and the bar stays one
+   tag wide however long the zone names are. */
+.tz-pick {
+  position: relative; display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 6px;
+  border-radius: 7px; background: var(--tray); color: var(--text-secondary); font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.tz-pick .caret { font-size: 9px; color: var(--text-muted); }
+.tz-pick:hover { background: var(--pressed); }
+.tz-pick:has(select:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.tz-pick select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 12px; }
+.phase { font-size: 13px; font-weight: 600; text-transform: capitalize; }
+.phase.open { color: var(--tone-success-fg); }
+.phase.pre-market, .phase.after-hours { color: var(--tone-warning-fg); }
 .phase.closed { color: var(--text-muted); }
 
-.badge {
-  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-  padding: 3px 8px; border-radius: 999px;
-  border: 1px solid var(--border); color: var(--text-secondary);
-  white-space: nowrap;
+/* ---- exposure toolbar and its info line ---- */
+.toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--page);
 }
-.badge.warn { color: var(--serious); border-color: color-mix(in srgb, var(--serious) 50%, transparent); }
-.badge.live { color: var(--good); border-color: color-mix(in srgb, var(--good) 50%, transparent); }
-
-select.ticker, input.ticker { font-weight: 650; min-width: 132px; }
-
-/* -------------------------------------------------------------- strip/filters */
+/* A select with its label inside the same field: one control, one row. */
+.tb-field, .csel {
+  display: inline-flex; align-items: center; height: 32px; padding-left: 10px;
+  background: var(--surface-1); border-radius: var(--radius-field); box-shadow: var(--field-shadow);
+  font-size: 12.5px; color: var(--text-muted); white-space: nowrap; transition: box-shadow 140ms ease;
+}
+.tb-field:hover, .csel:hover { box-shadow: 0 0 0 1px var(--edge), 0 1px 2px rgba(0, 0, 0, 0.04); }
+.tb-field:focus-within, .csel:focus-within { box-shadow: 0 0 0 1px var(--edge-focus), 0 1px 2px rgba(0, 0, 0, 0.04); }
+.tb-field select, .csel select {
+  height: 30px; min-height: 0; border: 0; box-shadow: none; background-color: transparent; padding: 0 28px 0 6px;
+  font-weight: 600; font-size: 13px; color: var(--text-primary);
+}
+.tb-field select:focus-visible, .csel select:focus-visible { outline: none; }
+.tb-field:has(select:focus-visible), .csel:has(select:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .strip {
   display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
-  padding: 6px 16px; font-size: 11px; color: var(--text-secondary);
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface-1) 60%, var(--page));
+  padding: 7px 20px; font-size: 12.5px; line-height: 18px; color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-.strip b { color: var(--text-primary); font-weight: 620; }
+.strip b { color: var(--text-primary); font-weight: 600; }
 
-.filters {
-  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
-  padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface-1);
-}
-.field { display: flex; flex-direction: column; gap: 3px; }
-.field label { font-size: 9px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted); }
+/* ============================================================ components */
 
-select, button, input.ticker {
-  font-family: var(--font); font-size: 12.5px; color: var(--text-primary);
-  background: var(--page); border: 1px solid var(--border);
-  border-radius: 7px; padding: 5px 9px; min-height: 30px; cursor: pointer;
+/* Focus rings only under the keyboard, never after a click. */
+:focus:not(:focus-visible) { outline: none; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Buttons: AffectUI secondary (white, outlined) is the default; primary is
+   the dark gradient for the one main action; ghost is text only. Small
+   (32px, radius 10) suits a dense dashboard. */
+button, .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px; min-height: 0; padding: 0 12px; border: 1px solid var(--btn-line); border-radius: var(--radius-field);
+  background: var(--btn-bg); color: var(--text-primary); box-shadow: var(--btn-shadow);
+  font: 500 13px/1 var(--font); letter-spacing: -0.01em; cursor: pointer; white-space: nowrap;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms var(--ease);
 }
-select:hover, button:hover, input.ticker:hover { border-color: var(--text-muted); }
-select:focus-visible, button:focus-visible, input.ticker:focus-visible { outline: 2px solid var(--series-call); outline-offset: 1px; }
+button:hover, .btn:hover { background: color-mix(in srgb, var(--btn-bg) 94%, var(--text-primary)); }
+button:active:not(:disabled), .btn:active:not(:disabled) { transform: scale(0.97); }
+button:disabled { opacity: 0.4; cursor: default; }
+button[aria-pressed="true"] { background: var(--tray); border-color: transparent; box-shadow: none; color: var(--text-primary); }
+.btn .ico { width: 16px; height: 16px; }
+.btn-primary {
+  color: var(--btn-dark-ink); border-color: transparent;
+  background: linear-gradient(var(--btn-dark-top), var(--btn-dark-bottom));
+  box-shadow: 0 0 0 1px var(--btn-dark-ring), 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.btn-primary:hover { background: linear-gradient(var(--btn-dark-hover-top), var(--btn-dark-hover-bottom)); }
+.btn-ghost, .linkish { background: transparent !important; border-color: transparent !important; box-shadow: none !important; color: var(--text-muted); }
+.btn-ghost:hover, .linkish:hover { background: var(--tray) !important; color: var(--text-secondary); }
+
+/* Icon buttons: ghost, 32px square; pressed takes a gray fill. */
+.icon-btn {
+  width: 32px; height: 32px; padding: 0; border-color: transparent !important; background: transparent !important;
+  box-shadow: none !important; color: var(--text-muted);
+}
+.icon-btn:hover { background: var(--tray) !important; color: var(--text-secondary); }
+.icon-btn[aria-pressed="true"] { background: var(--pressed) !important; color: var(--text-primary); }
+
+/* Native selects, styled as AffectUI's select trigger: same height and edge
+   as a text field, a quiet chevron, no ring on click. */
+select {
+  appearance: none; -webkit-appearance: none; height: 32px; min-height: 0; padding: 0 28px 0 10px;
+  border: 0; border-radius: var(--radius-field); box-shadow: var(--field-shadow);
+  background: var(--surface-1) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 4.5l3 3 3-3' fill='none' stroke='%238f8f8f' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 9px center;
+  font: 500 13px var(--font); color: var(--text-primary); cursor: pointer;
+}
+select:hover { box-shadow: 0 0 0 1px var(--edge), 0 1px 2px rgba(0, 0, 0, 0.04); }
+
+/* Badges: a pill, 20px, 11px text, a soft tint with its text in the darker
+   shade. The word carries the state; colour never does it alone. */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px;
+  font: 500 11px/16px var(--font); letter-spacing: 0; text-transform: none; white-space: nowrap; font-variant-numeric: tabular-nums;
+  background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); border: 0;
+}
+.badge.tone-info { background: var(--tone-info-bg); color: var(--tone-info-fg); }
+.badge.tone-success, .badge.live { background: var(--tone-success-bg); color: var(--tone-success-fg); }
+.badge.tone-warning, .badge.warn { background: var(--tone-warning-bg); color: var(--tone-warning-fg); }
+.badge.tone-danger { background: var(--tone-danger-bg); color: var(--tone-danger-fg); }
+.badge.tone-purple { background: var(--tone-purple-bg); color: var(--tone-purple-fg); }
+.badge.dot::before, .badge.live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge.live::before { animation: badge-live 1.8s var(--ease) infinite; }
+@keyframes badge-live { 0% { box-shadow: 0 0 0 0 currentColor; } 70%, 100% { box-shadow: 0 0 0 4px transparent; } }
+
+/* Segmented control (tray): a gray track with the chosen option raised on a
+   white pill. Used for single choices (tabs) and, with aria-pressed, for
+   toggle groups and button groups. */
+.seg, .tabs {
+  display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 11px;
+  background: var(--tray); border: 0; overflow: visible; flex-wrap: wrap;
+}
+.seg button, .tabs button {
+  height: 26px; min-height: 0; padding: 0 10px; border: 0 !important; border-radius: 8px;
+  background: transparent !important; box-shadow: none !important; color: var(--text-muted);
+  font: 500 12.5px/1 var(--font); letter-spacing: 0; text-transform: none;
+}
+.seg button:hover, .tabs button:hover { color: var(--text-secondary); }
+.seg button[aria-selected="true"], .seg button[aria-pressed="true"],
+.tabs button[aria-selected="true"] {
+  background: var(--pill) !important; box-shadow: var(--pill-shadow) !important; color: var(--text-primary); font-weight: 600;
+}
+.seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+.seg button:focus-visible, .tabs button:focus-visible { outline-offset: -2px; }
+
+/* Switches, for settings that apply at once (the chart's Levels, VWAP...):
+   AffectUI's 26 x 16 track. Still a native checkbox underneath. */
+.chk { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-secondary); cursor: pointer; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.chk input {
+  appearance: none; -webkit-appearance: none; position: relative; flex: 0 0 auto; width: 26px; height: 16px; margin: 0;
+  border-radius: 999px; background: var(--switch-off); cursor: pointer; transition: background 200ms ease;
+}
+.chk input::before {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+  background: #fff; box-shadow: var(--switch-thumb-shadow); transition: transform 260ms var(--ease);
+}
+.chk input:hover { background: var(--switch-off-hover); }
+.chk input:checked { background: var(--text-primary); }
+.chk input:checked:hover { background: color-mix(in srgb, var(--text-primary) 85%, var(--surface-1)); }
+.chk input:checked::before { transform: translateX(10px); background: var(--switch-on-thumb); }
+
+/* Keyboard chip. */
+.kbd {
+  display: inline-grid; place-items: center; height: 18px; min-width: 18px; padding: 0 5px; border-radius: 5px;
+  background: var(--btn-bg); color: var(--tone-neutral-fg); font: 500 11px/1 var(--font);
+  box-shadow: inset 0 0 0 1px var(--kbd-edge), inset 0 -1px 0 var(--kbd-depth);
+}
+
+/* Menus (the ticker suggestions, the drawing tools): AffectUI's dropdown. */
+.menu {
+  position: absolute; z-index: 40; min-width: 100%; max-height: 60vh; overflow: auto; padding: 5px;
+  background: var(--surface-1); border-radius: 14px; box-shadow: var(--menu-shadow);
+  animation: menu-in 200ms var(--ease);
+}
+.combo-list { top: calc(100% + 6px); left: 0; min-width: 300px; }
+.menu-item {
+  display: flex; align-items: baseline; gap: 10px; min-height: 34px; padding: 7px 10px; border-radius: var(--radius-row);
+  font-size: 13.5px; line-height: 20px; color: var(--menu-ink); cursor: pointer;
+}
+.menu-item b { font-weight: 600; color: var(--text-primary); min-width: 46px; }
+.menu-item.active, .menu-item:hover { background: var(--glow); }
+.menu-desc { color: var(--text-muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-empty { padding: 9px 10px; font-size: 12.5px; color: var(--text-muted); }
+@keyframes menu-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+/* Tooltip: a small dark label, after a 500ms hover or at once on keyboard
+   focus (ui.js). Never the only copy of anything. */
+.ui-tip {
+  position: fixed; left: 0; top: 0; z-index: 1000; max-width: min(240px, calc(100vw - 16px));
+  padding: 5px 9px; border-radius: 8px; background: var(--tip-bg); color: var(--tip-ink);
+  font: 500 12.5px/18px var(--font); letter-spacing: -0.005em; pointer-events: none;
+  box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.32), 0 2px 6px -2px rgba(0, 0, 0, 0.12);
+  animation: tip-in 160ms var(--ease);
+}
+@keyframes tip-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ------------------------------------------------------------------ layout */
 
 .columns {
-  display: grid; gap: var(--gap); padding: var(--gap);
+  display: grid; gap: var(--gap); padding: 16px 20px;
   /* Four columns matching the reference dashboard, with the chart column
      wider because it carries four stacked plots. Collapses on narrow
      viewports rather than shrinking the charts into unreadability. */
@@ -281,23 +549,25 @@ select:focus-visible, button:focus-visible, input.ticker:focus-visible { outline
 @media (max-width: 1450px) { .columns { grid-template-columns: repeat(2, minmax(280px, 1fr)); } }
 @media (max-width: 720px)  { .columns { grid-template-columns: 1fr; } }
 
+/* AffectUI card: a white surface on the page tray, a hairline ring and a
+   barely-there shadow instead of a border, 16px radius. */
 .card {
-  background: var(--surface-1); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 12px 14px; min-width: 0;
+  background: var(--surface-1); border: 0; box-shadow: var(--card-shadow);
+  border-radius: var(--radius); padding: 14px 16px; min-width: 0;
 }
-.card + .card, main + .card { margin: 0 var(--gap) var(--gap); }
+.card + .card, main + .card { margin: 0 20px 16px; }
 .col { display: flex; flex-direction: column; gap: 10px; }
 
 .card h2 {
-  margin: 0; font-size: 10.5px; letter-spacing: 0.11em; text-transform: uppercase;
-  color: var(--text-muted); font-weight: 650;
+  margin: 0; font-size: 14px; line-height: 20px; letter-spacing: -0.01em;
+  color: var(--text-primary); font-weight: 600;
   display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;
 }
 
-.subcard { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.subcard { border: 0; background: var(--page); border-radius: 12px; padding: 9px 11px; }
 .subcard .big { font-size: 22px; font-weight: 640; line-height: 1.1; }
 .subcard.maxpain .big { color: var(--text-primary); }
-.k { font-size: 9.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted); }
+.k { font-size: 12px; line-height: 16px; letter-spacing: 0; color: var(--text-muted); font-weight: 500; }
 
 /* ------------------------------------------------------------------- regime */
 
@@ -318,7 +588,7 @@ select:focus-visible, button:focus-visible, input.ticker:focus-visible { outline
 .tiles.two { grid-template-columns: 1fr 1fr; }
 .tiles.wide { grid-template-columns: 1fr; }
 
-.tile { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; min-width: 0; }
+.tile { border: 0; background: var(--page); border-radius: 12px; padding: 8px 10px; min-width: 0; }
 .tile .v { font-size: 15.5px; font-weight: 620; margin-top: 2px; overflow-wrap: anywhere; }
 .tile .why { font-size: 9.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.3; }
 .v.pos { color: var(--pos); }
@@ -326,7 +596,7 @@ select:focus-visible, button:focus-visible, input.ticker:focus-visible { outline
 
 /* Tiles tier A cannot compute. Rendered explicitly rather than omitted: an
    empty box reads as zero, and a plausible number would be worse. */
-.tile.unavailable { border-style: dashed; opacity: 0.75; display: flex; gap: 9px; align-items: baseline; }
+.tile.unavailable { border: 1px dashed var(--edge); background: transparent; opacity: 0.75; display: flex; gap: 9px; align-items: baseline; }
 .tile.unavailable .v { color: var(--text-muted); font-size: 14px; font-weight: 500; margin: 0; }
 .tile.unavailable .body { min-width: 0; }
 
@@ -441,16 +711,20 @@ svg text { font-family: var(--font); }
 .diag { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 7px 18px; font-size: 11.5px; color: var(--text-secondary); }
 .diag div span { color: var(--text-muted); }
 
-#notices { padding: 0 var(--gap); display: grid; gap: 8px; }
+#notices { padding: 0 20px; display: grid; gap: 8px; }
 #notices:empty { display: none; }
+/* Notices: AffectUI's soft tones, the word in the darker shade. */
 .notice {
-  border-left: 3px solid var(--warning); padding: 8px 12px;
-  background: color-mix(in srgb, var(--warning) 9%, transparent);
-  border-radius: 0 7px 7px 0; font-size: 12px; color: var(--text-secondary);
-  margin-top: var(--gap);
+  padding: 9px 13px; border-radius: 12px; font-size: 13px; line-height: 19px;
+  background: var(--tone-warning-bg); color: var(--text-secondary);
+  margin-top: 12px;
 }
-.notice strong { color: var(--text-primary); }
-.notice.err { border-left-color: var(--critical); background: color-mix(in srgb, var(--critical) 9%, transparent); }
+.notice strong { color: var(--tone-warning-fg); font-weight: 600; }
+.notice.err { background: var(--tone-danger-bg); }
+.notice.err strong { color: var(--tone-danger-fg); }
+.notice.info { background: var(--tone-info-bg); }
+.notice.info strong { color: var(--tone-info-fg); }
+#degraded { margin: 12px 20px 0; }
 
 /* Hold the previous render at reduced opacity on refetch — no skeleton
    flash, no layout jump. */
@@ -462,24 +736,14 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 
 /* ══════════════════════════ terminal view ══════════════════════════════ */
 
-.viewswitch { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.viewswitch button {
-  border: none; border-radius: 0; min-height: 28px; padding: 4px 11px;
-  font-size: 11.5px; background: transparent; color: var(--text-secondary);
-}
-.viewswitch button + button { border-left: 1px solid var(--border); }
-.viewswitch button[aria-selected="true"] {
-  background: color-mix(in srgb, var(--series-call) 15%, transparent);
-  color: var(--series-call); font-weight: 620;
-}
 
-.terminal { display: grid; gap: var(--gap); padding: var(--gap); }
+.terminal { display: grid; gap: var(--gap); padding: 16px 20px; }
 
 /* KPI strip — the reference dashboard's top row. */
 .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--gap); }
 .kpi {
-  background: var(--surface-1); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 9px 13px; min-width: 0;
+  background: var(--surface-1); border: 0; box-shadow: var(--card-shadow);
+  border-radius: var(--radius); padding: 12px 16px; min-width: 0;
 }
 .kpi .k { display: flex; align-items: center; gap: 5px; }
 .kpi .v { font-size: 23px; font-weight: 660; line-height: 1.15; margin-top: 1px; overflow-wrap: anywhere; }
@@ -497,8 +761,6 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 
 .price-card h2 { flex-wrap: wrap; }
 .ohlc { font-size: 10.5px; color: var(--text-secondary); font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0; font-weight: 500; }
-.chk { display: flex; align-items: center; gap: 4px; font-size: 10.5px; text-transform: none; letter-spacing: 0; color: var(--text-secondary); cursor: pointer; font-weight: 500; }
-.chk input { margin: 0; cursor: pointer; }
 
 .candle-up { stroke: var(--pos); fill: var(--pos); }
 .candle-dn { stroke: var(--neg); fill: var(--neg); }
@@ -513,17 +775,8 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 .last-tag rect { fill: var(--text-primary); }
 .last-tag text { fill: var(--surface-1); font-size: 9.5px; font-weight: 660; font-variant-numeric: tabular-nums; }
 
-/* metric tabs on the horizontal exposure panel */
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 8px 0 4px; }
-.tabs button {
-  min-height: 24px; padding: 2px 9px; font-size: 10.5px; letter-spacing: 0.05em;
-  text-transform: uppercase; border-radius: 6px; color: var(--text-muted);
-}
-.tabs button[aria-selected="true"] {
-  background: color-mix(in srgb, var(--series-call) 15%, transparent);
-  border-color: color-mix(in srgb, var(--series-call) 45%, transparent);
-  color: var(--series-call); font-weight: 650;
-}
+/* metric tabs on the horizontal exposure panel: a segmented control */
+.tabs { margin: 8px 0 4px; }
 
 /* bias signal rows */
 .bias-row {
@@ -585,19 +838,6 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 
 .chart-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 2px; }
 
-.seg { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
-.seg button {
-  border: none; border-radius: 0; min-height: 24px; padding: 2px 8px;
-  font-size: 10.5px; background: transparent; color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-.seg button + button { border-left: 1px solid var(--border); }
-.seg button[aria-selected="true"] {
-  background: color-mix(in srgb, var(--series-call) 15%, transparent);
-  color: var(--series-call); font-weight: 650;
-}
-.seg button:disabled { opacity: 0.32; cursor: not-allowed; }
-.seg button:disabled:hover { border-color: var(--border); }
 
 #price-chart svg, #indicator-panes svg { cursor: crosshair; touch-action: none; }
 #price-chart svg.panning { cursor: grabbing; }
@@ -622,9 +862,6 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 
 /* ───────────────────── chart selectors & crosshair ────────────────────── */
 
-.csel { display: flex; align-items: center; gap: 5px; font-size: 10px;
-        letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
-.csel select { min-height: 26px; padding: 3px 7px; font-size: 12px; font-weight: 600; }
 
 /* Crosshair sits above the marks and must never eat pointer events. */
 .xhair { pointer-events: none; }
@@ -641,14 +878,13 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
      than sitting on the dates. */
   position: absolute; left: 10px; bottom: 24px; pointer-events: none;
   display: flex; flex-direction: column; gap: 2px;
-  padding: 6px 9px; border-radius: 6px;
+  padding: 7px 10px; border-radius: 10px;
   /* Opaque, not translucent: the off-scale level markers share this corner,
      and text ghosting through is less readable than clean occlusion. The
      Readout toggle is there for when you need what is underneath. */
   background: var(--surface-1);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  border: 1px solid var(--border);
-  font-size: 11px; font-variant-numeric: tabular-nums; line-height: 1.35;
+  box-shadow: var(--menu-shadow);
+  font-size: 11.5px; font-variant-numeric: tabular-nums; line-height: 1.4;
 }
 .readout .r-row { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
 .readout .r-when { color: var(--text-secondary); font-weight: 620; }
@@ -671,9 +907,9 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 
 /* ---- interpretation box ------------------------------------------------ */
 .reading {
-  margin-top: 10px; padding: 10px 12px;
-  border: 1px solid var(--border); border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-1) 60%, var(--page));
+  margin-top: 12px; padding: 12px 14px;
+  border: 0; border-radius: 12px;
+  background: var(--page);
 }
 .reading[hidden] { display: none !important; }
 .reading-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
@@ -733,28 +969,18 @@ main.stale { opacity: 0.55; transition: opacity 0.15s; }
 .reading-chip .c-val .sign.neg { color: var(--neg); }
 
 /* Close control inside the strike table, which opens far below its button. */
-.linkish {
-  background: none; border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text-secondary); font-size: 11px; padding: 3px 9px; cursor: pointer;
-}
-.linkish:hover { color: var(--text-primary); border-color: var(--text-muted); }
 
 /* ---- Chart view: technical chart -------------------------------------- */
 
-.techview { display: grid; gap: var(--gap); padding: var(--gap); }
+.techview { display: grid; gap: var(--gap); padding: 16px 20px; }
 
 /* The chart view does not read the exposure payload, so the chrome that
    scopes it -- expiry filters, strike strip, degraded-chain notice, the
    strike table and the provenance card -- would be controls that do nothing. */
-body[data-view="chart"] .exposure-only,
-body[data-view="chart"] .ticker-field { display: none !important; }
+body[data-view="chart"] .exposure-only { display: none !important; }
 
 .tech-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
 .tech-symbols button { min-width: 44px; font-weight: 620; }
-#tech-layers button[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--series-call) 15%, transparent);
-  color: var(--series-call); font-weight: 650;
-}
 #tech-note { min-height: 14px; }
 
 .tech-wrap { position: relative; margin-top: 4px; }
@@ -768,9 +994,9 @@ body[data-view="chart"] .ticker-field { display: none !important; }
      it stops short of the right-axis tags and covers no data. */
   position: absolute; left: 10px; top: 8px; pointer-events: none;
   max-width: calc(100% - 100px);
-  padding: 3px 7px; border-radius: 6px;
-  background: color-mix(in srgb, var(--surface-1) 80%, transparent);
-  font-size: 11px; line-height: 1.55; font-variant-numeric: tabular-nums;
+  padding: 4px 8px; border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-1) 85%, transparent);
+  font-size: 11.5px; line-height: 1.55; font-variant-numeric: tabular-nums;
 }
 .tl-row { display: flex; flex-wrap: wrap; gap: 0 10px; align-items: baseline; }
 .tl-head { gap: 0 8px; }
@@ -831,12 +1057,7 @@ body[data-view="chart"] .ticker-field { display: none !important; }
 .sig-leader { stroke-width: 1; stroke-dasharray: 1 2; }
 /* Intraday: bars are spaced by index, so a session break needs a mark. */
 .session-line { stroke: var(--text-muted); stroke-opacity: 0.45; stroke-width: 1; stroke-dasharray: 2 4; }
-.tech-session { min-height: 24px; padding: 2px 9px; font-size: 10.5px; }
-.tech-session[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--series-call) 15%, transparent);
-  color: var(--series-call); font-weight: 650;
-}
-.tech-session:disabled { cursor: default; opacity: 0.75; }
+
 .roll-mark { cursor: help; }
 .roll-mark line { stroke: var(--text-secondary); stroke-width: 1.5; }
 .roll-mark text { font-size: 9px; font-weight: 650; fill: var(--text-secondary); }
@@ -880,45 +1101,44 @@ body[data-view="chart"] .ticker-field { display: none !important; }
 .astro-ev.minor text { font-size: 8.5px; fill: var(--text-muted); }
 .astro-ev line { stroke: var(--text-muted); stroke-opacity: 0.35; stroke-width: 1; stroke-dasharray: 1 3; }
 
-/* ---- typed symbols ---- */
-input.ticker { width: 9.5em; text-transform: uppercase; cursor: text; }
-input.ticker::placeholder { text-transform: none; font-weight: 500; color: var(--text-muted); }
-.tech-symbol-input {
-  width: 6.5em; min-height: 26px; padding: 2px 7px; font: inherit; font-size: 11px; font-weight: 600;
-  text-transform: uppercase; color: var(--text-primary); background: var(--surface-1);
-  border: 1px solid var(--border); border-radius: 6px;
-}
-.tech-symbol-input.active { border-color: var(--series-call); box-shadow: 0 0 0 1px var(--series-call) inset; }
-.tech-symbol-input::placeholder { text-transform: none; color: var(--text-muted); font-weight: 500; }
 .nodata.compact { min-height: 0; padding: 14px 10px; grid-column: 1 / -1; }
 
 /* ---- drawing tools (draw.js) ---------------------------------------- */
 .draw-frame { display: flex; gap: 6px; align-items: stretch; }
 .draw-frame > .draw-area { flex: 1; min-width: 0; }
 .draw-bar { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; flex: 0 0 auto; position: relative; z-index: 6; }
+/* AffectUI ghost icon buttons; the active tool and pressed toggles take the
+   gray fill, Remove's second-click prompt the danger tone. */
 .draw-btn {
-  width: 30px; height: 30px; min-height: 0; padding: 0; display: grid; place-items: center;
-  border-radius: 6px; border-color: transparent; background: transparent; color: var(--text-secondary);
+  width: 32px; height: 32px; min-height: 0; padding: 0; display: grid; place-items: center;
+  border-radius: 10px; border-color: transparent !important; background: transparent !important; box-shadow: none !important;
+  color: var(--text-muted);
 }
-.draw-btn:hover { background: color-mix(in srgb, var(--text-primary) 8%, transparent); border-color: transparent; color: var(--text-primary); }
-.draw-btn.on { color: var(--series-call); background: color-mix(in srgb, var(--series-call) 15%, transparent); }
-.draw-btn.armed { color: var(--critical); background: color-mix(in srgb, var(--critical) 15%, transparent); }
-.draw-btn:disabled { opacity: 0.35; cursor: default; background: transparent; }
+.draw-btn:hover { background: var(--tray) !important; color: var(--text-secondary); }
+.draw-btn.on { color: var(--text-primary); background: var(--pressed) !important; }
+.draw-btn.armed { color: var(--tone-danger-fg); background: var(--tone-danger-bg) !important; }
+.draw-btn:disabled { opacity: 0.35; cursor: default; background: transparent !important; }
 .draw-sep { height: 1px; background: var(--border); margin: 4px 4px; }
 .draw-group { position: relative; }
 .draw-menu {
-  position: absolute; left: 34px; top: 0; z-index: 40; min-width: 250px; max-height: 72vh; overflow: auto;
-  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22); padding: 4px;
+  position: absolute; left: 38px; top: 0; z-index: 40; min-width: 250px; max-height: 72vh; overflow: auto;
+  background: var(--surface-1); border: 0; border-radius: 14px; box-shadow: var(--menu-shadow); padding: 5px;
+  animation: menu-in 200ms var(--ease);
 }
-.draw-menu-head { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); padding: 5px 8px 6px; }
+.draw-menu-head { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-muted); padding: 7px 10px 5px; }
 .draw-menu button {
-  display: flex; gap: 9px; align-items: center; width: 100%; text-align: left; border: 0; background: transparent;
-  min-height: 28px; padding: 4px 8px; font-size: 12px; border-radius: 5px;
+  display: flex; gap: 9px; align-items: center; justify-content: flex-start; width: 100%; height: auto; min-height: 34px;
+  text-align: left; border: 0 !important; background: transparent !important; box-shadow: none !important;
+  padding: 0 10px; font: 400 13.5px/20px var(--font); color: var(--text-primary); border-radius: 9px;
 }
-.draw-menu button:hover { background: color-mix(in srgb, var(--text-primary) 7%, transparent); }
-.draw-menu button[aria-checked="true"] { color: var(--series-call); font-weight: 650; }
-.draw-menu button svg { flex: 0 0 18px; }
+.draw-menu button:hover { background: var(--glow) !important; }
+.draw-menu button[aria-checked="true"] { font-weight: 600; }
+.draw-menu button[aria-checked="true"]::after {
+  content: ""; margin-left: auto; width: 14px; height: 14px; flex: 0 0 14px;
+  background: currentColor; -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M3 7.5l2.5 2.5L11 4.5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / contain no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M3 7.5l2.5 2.5L11 4.5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / contain no-repeat;
+}
+.draw-menu button svg { flex: 0 0 18px; color: var(--text-muted); }
 
 /* Cursors. !important: the charts' own `#tech-chart svg` and `.hit` rules
    set crosshair with an id's weight. */
@@ -971,3 +1191,13 @@ input.ticker::placeholder { text-transform: none; font-weight: 500; color: var(-
 .dw-hit { fill: none; stroke: none; }
 .drw.preview { opacity: 0.85; }
 .drw.sel .dw-line { stroke-width: 2.2; }
+
+/* Narrow windows: the rail by default (ui.js), and the top bar and toolbar
+   drop their secondary text rather than wrap. */
+@media (max-width: 900px) {
+  #clock-next, .dotsep { display: none; }
+  /* Visually hidden, not removed: through the <label> it names the select. */
+  .tb-field > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .topbar { gap: 10px; padding: 0 12px; }
+  .toolbar, .strip { padding-left: 12px; padding-right: 12px; }
+}

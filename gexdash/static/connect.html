@@ -6,19 +6,22 @@
 <title>gexdash — connect to Schwab</title>
 <link rel="stylesheet" href="/static/styles.css">
 <style>
-  .wrap { max-width: 46rem; margin: 0 auto; padding: var(--gap); display: grid; gap: var(--gap); }
-  .step { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid var(--border);
+  /* The dashboard's AffectUI components (styles.css): cards, the dark
+     primary button, a text field's edge. */
+  .wrap { max-width: 46rem; margin: 0 auto; padding: 20px; display: grid; gap: 14px; }
+  .step { display: grid; gap: 10px; padding: 14px 16px; border: 0; box-shadow: var(--card-shadow);
           border-radius: var(--radius); background: var(--surface-1); }
-  .step h3 { margin: 0; font-size: 13px; font-weight: 650; display: flex; gap: 8px; align-items: center; }
+  .step h3 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; display: flex; gap: 8px; align-items: center; }
   .num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
-         background: var(--series-call); color: #fff; font-size: 11px; font-weight: 700; }
-  .step p { margin: 0; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
-  .btn-primary { background: var(--series-call); color: #fff; border-color: transparent;
-                 font-weight: 620; padding: 8px 16px; }
-  .btn-primary:hover { filter: brightness(1.08); border-color: transparent; }
-  input[type=text] { font-family: var(--mono); font-size: 12px; padding: 8px 10px; width: 100%;
-                     border: 1px solid var(--border); border-radius: 7px;
-                     background: var(--page); color: var(--text-primary); }
+         background: var(--text-primary); color: var(--surface-1); font-size: 11px; font-weight: 600; }
+  .step p { margin: 0; font-size: 13px; color: var(--text-secondary); line-height: 1.55; }
+  input[type=text] { font-family: var(--mono); font-size: 12.5px; height: 36px; padding: 0 12px; width: 100%;
+                     border: 0; border-radius: var(--radius-field); box-shadow: var(--field-shadow);
+                     background: var(--surface-1); color: var(--text-primary); outline: none; }
+  input[type=text]:hover { box-shadow: 0 0 0 1px var(--edge), 0 1px 2px rgba(0, 0, 0, 0.04); }
+  input[type=text]:focus { box-shadow: 0 0 0 1px var(--edge-focus), 0 1px 2px rgba(0, 0, 0, 0.04); }
+  .topbar .title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+  .topbar .brand-mark { margin-right: -4px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12px;
         font-variant-numeric: tabular-nums; }
@@ -37,13 +40,15 @@
 </head>
 <body>
 
-<header class="top">
-  <div class="brand">gexdash</div>
-  <span class="ver">connect to Schwab</span>
+<header class="topbar">
+  <span class="brand-mark" aria-hidden="true"><svg class="ico" viewBox="0 0 20 20" width="18" height="18"><path d="M3 15l4-5 3 3 4-6 3 4"/><path d="M3 3v14h14"/></svg></span>
+  <span class="brand">gexdash</span>
+  <span class="muted">/</span>
+  <span class="title">Connect Schwab</span>
   <div class="spacer"></div>
   <span class="badge" id="badge-state">checking…</span>
-  <a href="/"><button>← dashboard</button></a>
-  <button id="btn-theme" title="Toggle light / dark">◐</button>
+  <a class="btn btn-secondary" href="/" style="text-decoration:none">← Dashboard</a>
+  <button class="icon-btn" id="btn-theme" aria-label="Light or dark"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/><path d="M10 3.5a6.5 6.5 0 000 13z" fill="currentColor" stroke="none"/></svg></button>
 </header>
 
 <div class="wrap">
@@ -61,7 +66,7 @@
        your callback and <strong>fail to connect</strong> — that is expected, nothing is
        listening there. The address bar will still hold the code.</p>
     <div class="row">
-      <a id="auth-link" target="_blank" rel="noopener"><button class="btn-primary">Authorize with Schwab ↗</button></a>
+      <a id="auth-link" target="_blank" rel="noopener"><button class="btn btn-primary">Authorize with Schwab ↗</button></a>
       <span class="muted small" id="auth-hint"></span>
     </div>
   </section>
@@ -73,7 +78,7 @@
        this field is faster than a terminal round-trip.</p>
     <input type="text" id="redirect-url" placeholder="https://127.0.0.1/?code=…&amp;session=…" autocomplete="off" spellcheck="false">
     <div class="row">
-      <button class="btn-primary" id="btn-exchange">Connect</button>
+      <button class="btn btn-primary" id="btn-exchange">Connect</button>
       <button id="btn-paste">Paste from clipboard</button>
       <span id="exchange-state" class="muted small"></span>
     </div>

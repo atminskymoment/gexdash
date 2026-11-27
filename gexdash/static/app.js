@@ -61,6 +61,9 @@ const state = {
   // and what /api/symbol said about it.
   symbol: "SPX",
   symbolInfo: null,
+  // True once /api/meta has answered and the URL's symbol is resolved: the
+  // first bars and internals wait for it.
+  ready: false,
   expTab: "gex",
   range: "1D",
   interval: "1m",
@@ -225,18 +228,19 @@ function params() {
 async function loadMeta() {
   const meta = await (await fetch("/api/meta")).json();
   state.meta = meta;
-  // Suggestions only: any symbol can be typed.
-  $("symbol-list").innerHTML = Object.entries(meta.families)
-    .flatMap(([family, keys]) => keys.map((k) => {
-      const i = meta.instruments.find((x) => x.key === k);
-      return `<option value="${k}">${esc(i.label)} · ${esc(family)}</option>`;
-    })).join("");
   const wanted = (new URLSearchParams(location.search).get("symbol") || "SPX").trim().toUpperCase();
   const info = await lookupSymbol(wanted).catch(() => null);
   state.symbol = info ? info.symbol : "SPX";
   state.symbolInfo = info;
-  $("f-symbol").value = state.symbol;
+  state.ready = true;
+  if (state.view !== "chart") uiShowSymbol(state.symbol);
   if (!info) notice(`${wanted} is not a symbol gexdash can look up; showing SPX.`, true);
+}
+
+/** The search box's suggestions: the registered instruments (ui.js adds
+ *  recent typed symbols). */
+function registeredSymbols() {
+  return (state.meta?.instruments || []).map((i) => ({ symbol: i.key, label: i.label }));
 }
 
 /** What the server resolves a typed symbol to (/api/symbol): the key it
@@ -256,17 +260,18 @@ async function lookupSymbol(raw) {
  *  and says why where the exposure would be; its candles still load. */
 async function selectSymbol(raw) {
   const typed = String(raw || "").trim().toUpperCase();
-  if (!typed) { $("f-symbol").value = state.symbol; return; }
+  if (!typed) { uiShowSymbol(state.symbol); return; }
   let info;
   try {
     info = await lookupSymbol(typed);
   } catch (err) {
     notice(err.message, true);
-    $("f-symbol").value = state.symbol;
+    uiShowSymbol(state.symbol);
     return;
   }
   notice(null);
-  $("f-symbol").value = info.symbol;
+  uiShowSymbol(info.symbol);
+  if (info.generic) uiRemember(info.symbol);
   if (info.symbol === state.symbol && state.data) return;
   state.symbol = info.symbol;
   state.symbolInfo = info;
@@ -342,7 +347,7 @@ async function load() {
  *  view is mounted, where the internals panel lives; otherwise it is kept
  *  for setView() to draw. */
 async function loadBreadth() {
-  if (!$("f-symbol").value) return;          // before /api/meta: startup asks again
+  if (!state.ready) return;                  // before /api/meta: startup asks again
   try {
     const res = await fetch(`/api/breadth?${new URLSearchParams({ symbol: state.symbol })}`);
     state.breadth = await res.json();
@@ -359,7 +364,7 @@ async function loadBreadth() {
  *  anything without `available: true` draws as "Price history unavailable".
  *  Drawn only when the Terminal view is mounted. */
 async function loadBars() {
-  if (!$("f-symbol").value) return;          // before /api/meta: startup asks again
+  if (!state.ready) return;                  // before /api/meta: startup asks again
   const q = new URLSearchParams({
     symbol: state.symbol, range: state.range, interval: state.interval, indicators: "true",
   });
@@ -441,7 +446,10 @@ function renderHeader(d) {
   const secs = s.seconds_to_next || 0;
   $("clock-next").textContent = s.next_transition
     ? `→ ${s.next_transition} in ${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m` : "";
-  $("badge-provider").textContent = `provider: ${d.provider}`;
+  // One status badge: the synthetic warning when the data is invented,
+  // otherwise which feed it is.
+  $("badge-provider").textContent = d.provider === "schwab" ? "Schwab" : d.provider;
+  $("badge-provider").hidden = !!d.synthetic;
 
   // Connection state, if the provider has an auth story at all.
   const auth = d.auth || {};
@@ -455,7 +463,8 @@ function renderHeader(d) {
   }
   const syn = $("badge-synthetic");
   syn.hidden = !d.synthetic;
-  syn.textContent = "synthetic — not market data";
+  syn.textContent = "Synthetic data";
+  syn.dataset.tip = "The mock provider: invented prices and chains, not market data";
 }
 
 /** Header clock in the chosen zone. Ticks each second between payloads. */
@@ -645,7 +654,7 @@ function renderChartControls() {
     .join("");
 
   $("ind-seg").querySelectorAll("button").forEach((b) =>
-    b.setAttribute("aria-selected", String(!!state.indicators[b.dataset.ind])));
+    b.setAttribute("aria-pressed", String(!!state.indicators[b.dataset.ind])));
 
   const notes = [...(state.bars?.plan?.notes || [])];
   // Moon/Sun: the fit's holdout result belongs where the projection is drawn,
@@ -1835,8 +1844,12 @@ function setView(view, { reload = true } = {}) {
 
   VIEWS.forEach((v) => {
     $(`view-${v}`).hidden = state.view !== v;
-    $(`view-${v}-btn`).setAttribute("aria-selected", String(state.view === v));
+    if (state.view === v) $(`view-${v}-btn`).setAttribute("aria-current", "page");
+    else $(`view-${v}-btn`).removeAttribute("aria-current");
   });
+  // The one search box edits the symbol of the view on screen.
+  uiShowSymbol(state.view === "chart" ? tech.symbol : state.symbol);
+  $("f-symbol").placeholder = state.view === "chart" ? "Chart symbol" : "Search ticker";
 
   // A hidden container reports clientWidth 0, so every chart laid out while
   // the view was hidden has degenerate geometry. Switching must re-render,
@@ -1859,9 +1872,13 @@ function setView(view, { reload = true } = {}) {
 ["f-window", "f-sign", "f-flip"].forEach((id) =>
   $(id).addEventListener("change", () => (state.stream ? startStream() : load())));
 
-// "change" fires on Enter, on picking a suggestion, and on leaving the box.
-$("f-symbol").addEventListener("change", () => selectSymbol($("f-symbol").value));
-$("f-symbol").addEventListener("keydown", (ev) => { if (ev.key === "Escape") { $("f-symbol").value = state.symbol; $("f-symbol").blur(); } });
+// The search box (ui.js) commits on Enter or a pick: to the Chart view's
+// symbol on that view, to the Terminal and Columns symbol otherwise.
+uiInitSearch({
+  registered: registeredSymbols,
+  current: () => (state.view === "chart" ? tech.symbol : state.symbol),
+  commit: (sym) => (state.view === "chart" ? techSelectSymbol(sym) : selectSymbol(sym)),
+});
 
 ["view-terminal-btn", "view-columns-btn", "view-chart-btn"].forEach((id) =>
   $(id).addEventListener("click", () => setView($(id).dataset.view)));
@@ -1962,9 +1979,10 @@ function startStream() {
   };
   es.onerror = () => notice("stream disconnected", true);
   state.stream = es;
-  $("btn-live").textContent = "⏸ pause";
-  $("badge-live").textContent = "streaming";
-  $("badge-live").className = "badge live";
+  $("btn-live").innerHTML = `${uiIcon("pause")}<span>Pause</span>`;
+  $("btn-live").classList.replace("btn-primary", "btn-secondary");
+  $("badge-live").textContent = "Streaming";
+  $("badge-live").className = "badge tone-success live";
   // Bars move far more slowly than the exposure surface; refreshing them on
   // every 2s tick would be waste.
   clearInterval(state.barTimer);
@@ -1980,9 +1998,10 @@ function stopStream() {
   if (state.stream) state.stream.close();
   state.stream = null;
   clearInterval(state.barTimer);
-  $("btn-live").textContent = "▶ start";
-  $("badge-live").textContent = "paused";
-  $("badge-live").className = "badge";
+  $("btn-live").innerHTML = `${uiIcon("play")}<span>Stream</span>`;
+  $("btn-live").classList.replace("btn-secondary", "btn-primary");
+  $("badge-live").textContent = "Paused";
+  $("badge-live").className = "badge tone-neutral";
 }
 
 $("btn-live").addEventListener("click", () => {
@@ -2030,15 +2049,23 @@ if (savedTheme === "dark" || savedTheme === "light") document.documentElement.da
 tzSet(urlParams.get("tz") || storeGet(TZ_STORAGE_KEY) || "exchange");
 
 let resizeTimer;
-window.addEventListener("resize", () => {
+// The main column, not the window: collapsing the sidebar changes the
+// charts' width with no window resize. The Chart view and a Terminal drawn
+// from bars alone (a symbol with no exposure) need no exposure payload.
+let resizeWidth = 0;
+new ResizeObserver(([entry]) => {
+  const w = Math.round(entry.contentRect.width);
+  if (!resizeWidth || w === resizeWidth) { resizeWidth = w; return; }
+  resizeWidth = w;
   clearTimeout(resizeTimer);
-  // The chart view does not depend on the exposure payload having loaded.
   resizeTimer = setTimeout(() => {
     if (state.view === "chart") renderTechnicals();
     else if (state.data) render(state.data);
+    else if (state.view === "terminal" && state.bars) renderPriceChart();
   }, 150);
-});
+}).observe($("main"));
 
+uiInit();
 initTechnicals();
 drawInit("terminal", $("price-chart"));
 drawToolbar($("draw-bar-terminal"), $("price-chart"), $("draw-frame-terminal"));

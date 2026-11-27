@@ -8,45 +8,97 @@
 </head>
 <body>
 
-<header class="top">
-  <div class="brand">gexdash</div>
+<!-- App shell (AffectUI-styled, ui.js): a sidebar for where you are, a slim top
+     bar for what you are looking at, a toolbar for how it is computed. -->
+<div class="app" id="app">
 
-  <div class="viewswitch" role="tablist" aria-label="Layout">
-    <button id="view-terminal-btn" role="tab" data-view="terminal">▤ Terminal</button>
-    <button id="view-columns-btn" role="tab" data-view="columns">▥ Columns</button>
-    <button id="view-chart-btn" role="tab" data-view="chart">▦ Chart</button>
+<aside class="sidenav" id="sidenav" aria-label="Main">
+  <div class="sidenav-brand">
+    <span class="brand-mark" aria-hidden="true"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 15l4-5 3 3 4-6 3 4"/><path d="M3 3v14h14"/></svg></span>
+    <span class="brand nav-label">gexdash</span>
+  </div>
+  <nav class="nav" aria-label="Views">
+    <button class="nav-item" id="view-terminal-btn" data-view="terminal" aria-label="Terminal" data-tip="Terminal" data-tip-side="right" data-tip-when="rail"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="3.5" width="14" height="13" rx="2.5"/><path d="M3 7.5h14M7 11l2 1.5L7 14"/></svg><span class="nav-label">Terminal</span></button>
+    <button class="nav-item" id="view-columns-btn" data-view="columns" aria-label="Columns" data-tip="Columns" data-tip-side="right" data-tip-when="rail"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="3.5" width="14" height="13" rx="2.5"/><path d="M7.7 3.5v13M12.3 3.5v13"/></svg><span class="nav-label">Columns</span></button>
+    <button class="nav-item" id="view-chart-btn" data-view="chart" aria-label="Chart" data-tip="Chart" data-tip-side="right" data-tip-when="rail"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 4v12M10 6v9M15 3v10"/><rect x="3.6" y="7" width="2.8" height="5" rx=".8"/><rect x="8.6" y="8" width="2.8" height="4" rx=".8"/><rect x="13.6" y="5" width="2.8" height="5" rx=".8"/></svg><span class="nav-label">Chart</span></button>
+  </nav>
+  <div class="nav-sep" role="separator"></div>
+  <nav class="nav" aria-label="More">
+    <a class="nav-item" href="/connect" aria-label="Connect Schwab" data-tip="Connect Schwab" data-tip-side="right" data-tip-when="rail"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M8 12l4-4"/><path d="M9.5 5.5l1.2-1.2a3.2 3.2 0 014.5 4.5L14 10M6 10l-1.2 1.2a3.2 3.2 0 004.5 4.5L10.5 14.5"/></svg><span class="nav-label">Connect Schwab</span></a>
+    <a class="nav-item" href="/api/docs" target="_blank" rel="noopener" aria-label="API docs" data-tip="API docs" data-tip-side="right" data-tip-when="rail"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7 5L3 10l4 5M13 5l4 5-4 5"/></svg><span class="nav-label">API docs</span></a>
+    <a class="nav-item" href="https://github.com/atminskymoment/gexdash/blob/main/docs/how-to-use.md" target="_blank" rel="noopener" aria-label="How to use" data-tip="How to use" data-tip-side="right" data-tip-when="rail"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M8.2 8a1.9 1.9 0 113 1.5c-.8.5-1.2.9-1.2 1.8M10 13.8v.1"/></svg><span class="nav-label">How to use</span></a>
+  </nav>
+  <div class="grow"></div>
+  <button class="nav-item nav-collapse" id="nav-collapse" aria-controls="sidenav" aria-expanded="true" aria-label="Collapse the sidebar" data-tip="Expand the sidebar" data-tip-side="right" data-tip-when="rail"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M12 5l-5 5 5 5"/></svg><span class="nav-label">Collapse</span></button>
+</aside>
+
+<div class="main" id="main">
+
+<header class="topbar">
+  <!-- One search for the view on screen: the Terminal and Columns symbol, or
+       the Chart view's. Any ticker; ui.js suggests the registered ones. -->
+  <div class="search" role="search">
+    <label class="field-box" for="f-symbol">
+      <svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><path d="M13.2 13.2L17 17"/></svg>
+      <input id="f-symbol" class="ticker" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false"
+        aria-controls="symbol-list" aria-label="Ticker" autocomplete="off" spellcheck="false" autocapitalize="characters"
+        placeholder="Search ticker">
+      <kbd class="kbd" aria-hidden="true">/</kbd>
+    </label>
+    <div class="menu combo-list" id="symbol-list" role="listbox" aria-label="Tickers" hidden></div>
   </div>
 
-  <div class="clock">
-    <div class="k" id="clock-label">Market time</div>
+  <div class="clockline">
+    <span class="sr-only" id="clock-label">Market time</span>
+    <span class="clock-time" id="clock-time">—</span>
     <!-- The zone tag is the picker: every time on screen follows it. -->
-    <div class="v"><span id="clock-time">—</span>
-      <label class="tz-pick" title="Time zone for every time shown">
-        <span id="clock-tz" class="et">ET</span><span class="caret" aria-hidden="true">▾</span>
-        <select id="f-tz" aria-label="Time zone for every time shown"></select>
-      </label></div>
-  </div>
-  <div class="clock">
-    <div class="k">Phase</div>
-    <div class="v"><span id="clock-phase" class="phase">—</span> <span id="clock-next" class="muted"></span></div>
+    <label class="tz-pick" data-tip="Time zone for every time shown">
+      <span id="clock-tz" class="et">ET</span><span class="caret" aria-hidden="true">▾</span>
+      <select id="f-tz" aria-label="Time zone for every time shown"></select>
+    </label>
+    <span class="dotsep" aria-hidden="true">·</span>
+    <span id="clock-phase" class="phase">—</span>
+    <span id="clock-next" class="muted"></span>
   </div>
 
-  <div class="spacer"></div>
-
-  <span class="badge" id="badge-provider">provider —</span>
-  <span class="badge warn" id="badge-synthetic" hidden>synthetic</span>
-  <span class="badge" id="badge-live">paused</span>
-
-  <div class="field ticker-field">
-    <label for="f-symbol">Ticker</label>
-    <!-- Any symbol: the registered ones are suggested, anything else is typed
-         (AAPL, BRK.B, $RUT, /CL) and checked by /api/symbol. -->
-    <input id="f-symbol" class="ticker" list="symbol-list" autocomplete="off" spellcheck="false"
-      autocapitalize="characters" placeholder="Ticker…" title="Type any ticker and press Enter: AAPL, BRK.B, $RUT, /CL">
-    <datalist id="symbol-list"></datalist>
-  </div>
-  <button id="btn-theme" title="Toggle light / dark">◐</button>
+  <span class="grow"></span>
+  <!-- One data-status badge: the synthetic warning replaces the provider name. -->
+  <span class="badge tone-neutral" id="badge-provider">—</span>
+  <span class="badge tone-warning dot" id="badge-synthetic" hidden>Synthetic data</span>
+  <button class="icon-btn" id="btn-theme" aria-label="Light or dark" data-tip="Light or dark"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/><path d="M10 3.5a6.5 6.5 0 000 13z" fill="currentColor" stroke="none"/></svg></button>
 </header>
+
+<!-- How the exposure surface is computed, and its stream: one row, both
+     exposure views. The Chart view hides it. -->
+<div class="toolbar exposure-only" role="toolbar" aria-label="Exposure settings">
+  <label class="tb-field"><span>Expiry</span>
+    <select id="f-window">
+      <option value="0dte">0DTE only</option>
+      <option value="7dte">≤ 7 DTE</option>
+      <option value="30dte" selected>≤ 30 DTE</option>
+      <option value="60dte">≤ 60 DTE</option>
+      <option value="all">All listed</option>
+    </select>
+  </label>
+  <label class="tb-field" data-tip="Who holds which side of each option: an assumption, not a measurement"><span>Dealers</span>
+    <select id="f-sign">
+      <option value="long_calls_short_puts">Long calls / short puts</option>
+      <option value="short_calls_long_puts">Short calls / long puts</option>
+      <option value="all_long">Raw netted (no flip)</option>
+    </select>
+  </label>
+  <label class="tb-field"><span>Flip</span>
+    <select id="f-flip">
+      <option value="spot_solve">Spot solve (GEX(S)=0)</option>
+      <option value="cumulative">Cumulative by strike</option>
+    </select>
+  </label>
+  <span class="grow"></span>
+  <span class="badge tone-neutral" id="badge-live">Paused</span>
+  <button class="btn btn-primary" id="btn-live" data-tip="Re-price the surface on every spot tick"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7 5l8 5-8 5z" fill="currentColor"/></svg><span>Stream</span></button>
+  <button class="btn btn-secondary" id="btn-refresh" data-tip="Pull a fresh option chain now"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M16 10a6 6 0 11-1.8-4.3M16 4v3.5h-3.5"/></svg><span>Refetch</span></button>
+  <button class="btn btn-secondary" id="btn-table" aria-pressed="false" data-tip="Every strike in a table"><svg class="ico" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M3 8h14M3 12h14M8 8v8"/></svg><span>Table</span></button>
+</div>
 
 <div class="strip exposure-only">
   <span><b id="strip-range">—</b> active range</span>
@@ -55,38 +107,6 @@
   <span id="strip-exercise"></span>
   <span class="grow"></span>
   <span id="strip-oi">—</span>
-</div>
-
-<!-- One filter row above everything it scopes, both views. -->
-<div class="filters exposure-only">
-  <div class="field">
-    <label for="f-window">Expiry window</label>
-    <select id="f-window">
-      <option value="0dte">0DTE only</option>
-      <option value="7dte">≤ 7 DTE</option>
-      <option value="30dte" selected>≤ 30 DTE</option>
-      <option value="60dte">≤ 60 DTE</option>
-      <option value="all">All listed</option>
-    </select>
-  </div>
-  <div class="field">
-    <label for="f-sign">Dealer assumption</label>
-    <select id="f-sign">
-      <option value="long_calls_short_puts">Long calls / short puts</option>
-      <option value="short_calls_long_puts">Short calls / long puts</option>
-      <option value="all_long">Raw netted (no flip)</option>
-    </select>
-  </div>
-  <div class="field">
-    <label for="f-flip">Flip method</label>
-    <select id="f-flip">
-      <option value="spot_solve">Spot solve (GEX(S)=0)</option>
-      <option value="cumulative">Cumulative by strike</option>
-    </select>
-  </div>
-  <div class="field"><label for="btn-live">Stream</label><button id="btn-live">▶ start</button></div>
-  <div class="field"><label for="btn-refresh">Chain</label><button id="btn-refresh">↻ refetch</button></div>
-  <div class="field"><label for="btn-table">View</label><button id="btn-table" aria-pressed="false">▤ table</button></div>
 </div>
 
 <div id="degraded" class="notice warn exposure-only" role="status" hidden></div>
@@ -104,11 +124,11 @@
         <span id="price-title">—</span>
         <span class="ohlc" id="price-ohlc"></span>
         <span class="grow"></span>
-        <label class="chk"><input type="checkbox" id="chk-levels" checked> Levels</label>
-        <label class="chk"><input type="checkbox" id="chk-fit"> Fit levels</label>
-        <label class="chk"><input type="checkbox" id="chk-vwap" checked> VWAP</label>
-        <label class="chk"><input type="checkbox" id="chk-cross" checked> Crosshair</label>
-        <label class="chk"><input type="checkbox" id="chk-readout" checked> Readout</label>
+        <label class="chk"><input type="checkbox" role="switch" id="chk-levels" checked> Levels</label>
+        <label class="chk"><input type="checkbox" role="switch" id="chk-fit"> Fit levels</label>
+        <label class="chk"><input type="checkbox" role="switch" id="chk-vwap" checked> VWAP</label>
+        <label class="chk"><input type="checkbox" role="switch" id="chk-cross" checked> Crosshair</label>
+        <label class="chk"><input type="checkbox" role="switch" id="chk-readout" checked> Readout</label>
       </h2>
 
       <div class="chart-controls">
@@ -274,9 +294,6 @@
   <section class="card tech-card">
     <div class="tech-toolbar">
       <div class="seg tech-symbols" id="tech-symbols" role="tablist" aria-label="Chart symbol"></div>
-      <input id="tech-symbol-input" class="tech-symbol-input" autocomplete="off" spellcheck="false"
-        autocapitalize="characters" placeholder="Symbol…" aria-label="Any symbol"
-        title="Type any symbol and press Enter: AAPL, BRK.B, $RUT, /CL">
       <label class="csel"><span>Range</span><select id="tech-range"></select></label>
       <label class="csel"><span>Interval</span><select id="tech-interval"></select></label>
       <button id="tech-session" class="tech-session" aria-pressed="false" hidden
@@ -320,10 +337,15 @@
   <div class="diag" id="diag"></div>
 </div>
 
-<div class="tooltip" id="tooltip"></div>
+</div><!-- .main -->
+</div><!-- .app -->
 
-<!-- tz.js, astro.js, draw.js and technicals.js only define functions; app.js runs startup. -->
+<div class="tooltip" id="tooltip"></div>
+<div class="ui-tip" id="ui-tip" role="tooltip" hidden></div>
+
+<!-- tz.js, ui.js, astro.js, draw.js and technicals.js only define functions; app.js runs startup. -->
 <script src="/static/tz.js"></script>
+<script src="/static/ui.js"></script>
 <script src="/static/astro.js"></script>
 <script src="/static/draw.js"></script>
 <script src="/static/technicals.js"></script>

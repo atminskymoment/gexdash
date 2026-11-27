@@ -110,10 +110,10 @@ Known bugs, most visible to traders first. Found during the code review of
   snapshot.**
   Where: `api_refresh` in `gexdash/server.py`.
 
-- [ ] **`/connect` is served without the no-cache header** that
+- [x] **`/connect` is served without the no-cache header** that
   `_RevalidatingStatic` calls a correctness requirement for the static
   files, so a browser can show a stale connect page after an update.
-  Where: `connect_page` in `gexdash/server.py`.
+  Fixed: it is served `no-cache, must-revalidate`, like the dashboard.
 
 ### Schwab login
 

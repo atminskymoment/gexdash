@@ -8,7 +8,7 @@ data, and reading every screen.
 ![An 18-second preview of GEXDASH, cut from the narrated tour](media/gexdash-tour.gif)
 
 **Watch the narrated tour:** [gexdash-tour.mp4](media/gexdash-tour.mp4)
-(2:51, with [subtitles](media/gexdash-tour.srt)). The video and the preview
+(3:04, with [subtitles](media/gexdash-tour.srt)). The video and the preview
 above use live market data; the screenshots below use the built-in synthetic
 data, so their prices are invented.
 
@@ -20,7 +20,7 @@ data, so their prices are invented.
 
 1. [Install and start](#1-install-and-start)
 2. [Connect Schwab for live data](#2-connect-schwab-for-live-data)
-3. [The header](#3-the-header)
+3. [The sidebar and top bar](#3-the-sidebar-and-top-bar)
 4. [Terminal view](#4-terminal-view)
 5. [Columns view](#5-columns-view)
 6. [Chart view](#6-chart-view)
@@ -48,8 +48,7 @@ python -m gexdash.server           # or just: gexdash
 
 Open <http://127.0.0.1:8420>. It starts on **synthetic data**, with no account
 and at any hour, so you can explore everything first. While it is synthetic,
-the header carries a `SYNTHETIC — NOT MARKET DATA` badge and every chart says
-so too.
+the top bar carries a **Synthetic data** badge and every chart says so too.
 
 To use a different address or port, set `GEXDASH_HOST` or `GEXDASH_PORT`
 (see [`.env.example`](../.env.example)).
@@ -94,19 +93,41 @@ for all five chart symbols. Schwab's option-chain API refuses the ES and NQ
 futures, so their *exposure* is unavailable; their *charts* work. Details are
 in [data sources](data-sources.md#schwab--free-and-the-recommended-start).
 
-## 3. The header
+## 3. The sidebar and top bar
 
-The header is the same in every view.
+The page follows the [AffectUI](https://www.affectui.com/components) design
+system: a sidebar for where you are, a slim top bar for what you are looking
+at, and, on the Terminal and Columns views, one toolbar row for how the
+exposure is computed.
+
+**Sidebar**
+
+| Item | What it does |
+|---|---|
+| **Terminal · Columns · Chart** | Switches the view. Your choice is remembered. |
+| **Connect Schwab** | The [connection page](#2-connect-schwab-for-live-data). |
+| **API docs · How to use** | The interactive API reference, and this guide. |
+| **Collapse** | Shrinks the sidebar to an icon rail, with each item's name as a tooltip. Remembered; narrow windows start on the rail. |
+
+**Top bar**
 
 | Part | What it does |
 |---|---|
-| **Terminal · Columns · Chart** | Switches the view. Your choice is remembered. |
-| **Clock and zone tag** | The time in the zone you pick (New York by default). The tag beside it is the [zone picker](#8-time-zone). |
+| **Search** | The symbol of the view on screen: the Terminal and Columns symbol, or the Chart view's own. Press `/` from anywhere to jump to it. Suggestions list the registered symbols (SPX, SPY, ES, NDX, QQQ, NQ, USO) and ones you typed before; or type any symbol and press Enter: `AAPL`, `BRK.B`, `$RUT` for a cash index, `/CL` for a future. Escape puts back the one on screen. A typed symbol is priced on stated generic specs, shown in the strip; a typed future has charts but no exposure, because its multiplier is unknown. |
+| **Clock and zone tag** | The time in the zone you pick (New York by default). The tag is the [zone picker](#8-time-zone). |
 | **Phase** | Pre-market, open, after-hours or closed, and the time to the next change, on the exchange's clock. |
-| **Provider badge** | `mock` (synthetic) or `schwab`. |
-| **Paused / streaming** | Whether the exposure surface is live-streaming. |
-| **Ticker** | The instrument for the Terminal and Columns views. Pick SPX, SPY, ES, NDX, QQQ, NQ or USO from the suggestions, or type any symbol and press Enter: `AAPL`, `BRK.B`, `$RUT` for a cash index, `/CL` for a future. A typed symbol is priced on stated generic specs, shown in the strip; a typed future has charts but no exposure, because its multiplier is unknown. |
+| **Status badge** | **Synthetic data** on the mock provider, otherwise the feed's name. |
 | **◐** | Light or dark. |
+
+**Toolbar** (Terminal and Columns)
+
+| Part | What it does |
+|---|---|
+| **Expiry · Dealers · Flip** | The three settings that change every number, described under the [Terminal view](#4-terminal-view). |
+| **Paused / Streaming** | Whether the surface is live-streaming. |
+| **Stream** | Re-prices the surface on every spot tick, every 2 seconds; **Pause** stops it. |
+| **Refetch** | Pulls a fresh option chain now. |
+| **Table** | Opens the per-strike table. |
 
 ## 4. Terminal view
 
@@ -115,10 +136,10 @@ the dealer levels in the middle, exposure by strike beside them.
 
 ![Terminal view, numbered](images/terminal-annotated.png)
 
-1. **View switch.**
-2. **Clock and time-zone picker.**
-3. **Ticker.**
-4. **Filters.** These change every number on the page:
+1. **Views**, in the sidebar: Terminal, Columns and Chart.
+2. **Clock and time-zone picker**, in the top bar.
+3. **Search**, the symbol on screen. Type any ticker; `/` focuses it.
+4. **Expiry, Dealers and Flip**, the toolbar's settings. These change every number on the page:
    - *Expiry window* (0DTE, ≤ 7, ≤ 30, ≤ 60 DTE, or all listed): which
      expiries count. It moves the result more than anything else; the
      default is ≤ 30 DTE.
@@ -128,9 +149,9 @@ the dealer levels in the middle, exposure by strike beside them.
    - *Flip method*: *Spot solve* finds the spot price where total gamma
      exposure crosses zero, re-pricing every contract; *Cumulative by
      strike* finds where the running sum by strike crosses zero.
-5. **Stream, refetch, table.** *▶ start* streams the surface every 2 seconds.
-   *↻ refetch* pulls a fresh option chain now. *▤ table* opens the per-strike
-   table.
+5. **Stream, Refetch, Table**, at the right of the toolbar. **Stream** re-prices
+   the surface every 2 seconds. **Refetch** pulls a fresh option chain now.
+   **Table** opens the per-strike table.
 6. **Exposure tiles.** Net GEX (dollar delta per +1% move in spot), net DEX,
    vanna, charm, the gamma flip, and put/call open interest.
 7. **Range and interval** of the candles, from 1 day to 10 years and 1-minute
@@ -183,9 +204,10 @@ pricing model, rate and dividend, and when open interest was published.
 
 ## 6. Chart view
 
-A full-width technical chart for **QQQ, SPY, USO, ES and NQ**. It doesn't use
-the option chain, so it works for any of the five whatever the ticker in the
-header.
+A full-width technical chart. Its five tabs pick **QQQ, SPY, USO, ES and NQ**,
+and on this view the top bar's search sets its symbol to anything else. It
+keeps its own symbol, separate from the Terminal's, and doesn't use the
+option chain.
 
 ![Chart view, numbered](images/chart-annotated.png)
 
@@ -361,7 +383,7 @@ under a "Mon" divider. That is correct.
 
 ## 9. Light and dark
 
-**◐** in the header switches theme; `?theme=dark` links it. Both palettes
+**◐** in the top bar switches theme; `?theme=dark` links it. Both palettes
 were checked for colour-vision deficiency, and calls and puts are blue and
 orange, never green and red.
 

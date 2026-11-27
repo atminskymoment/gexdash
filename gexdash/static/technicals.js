@@ -263,27 +263,6 @@ function initTechnicals() {
       renderTechnicals();
       loadTechnicals();
     }));
-  // Any symbol: Enter (or leaving the box) loads it; Escape restores the one on screen.
-  $("tech-symbol-input").addEventListener("change", (e) => {
-    const sym = e.target.value.trim().toUpperCase();
-    if (!sym) return techSyncControls();
-    if (!TECH_SYMBOL_RE.test(sym)) {
-      e.target.value = TECH_SYMBOLS.includes(tech.symbol) ? "" : tech.symbol;
-      $("tech-note").textContent = `${sym} is not a symbol gexdash can look up: letters first, then letters, ` +
-        "digits or dots, with $ for a cash index or / for a future (AAPL, BRK.B, $RUT, /CL).";
-      return;
-    }
-    if (sym === tech.symbol) return;
-    tech.symbol = sym;
-    techRemember("chart", tech.symbol);
-    tech.data = null;
-    tech.zoom = null;
-    renderTechnicals();
-    loadTechnicals();
-  });
-  $("tech-symbol-input").addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { techSyncControls(); e.target.blur(); }
-  });
   $("tech-range").addEventListener("change", (e) => {
     tech.range = e.target.value;
     techRemember("chart_range", tech.range);
@@ -331,6 +310,27 @@ function initTechnicals() {
   drawToolbar($("draw-bar-tech"), $("tech-chart"), $("draw-frame-tech"));
 }
 
+/** Switch the Chart view to a typed symbol, from the top bar's search. A
+ *  malformed one is refused with the reason in the note line; the server has
+ *  the last word on the rest, and an alias comes back as its key. */
+function techSelectSymbol(raw) {
+  const sym = String(raw || "").trim().toUpperCase();
+  if (!sym || sym === tech.symbol) return uiShowSymbol(tech.symbol);
+  if (!TECH_SYMBOL_RE.test(sym)) {
+    uiShowSymbol(tech.symbol);
+    $("tech-note").textContent = `${sym} is not a symbol gexdash can look up: letters first, then letters, ` +
+      "digits or dots, with $ for a cash index or / for a future (AAPL, BRK.B, $RUT, /CL).";
+    return;
+  }
+  if (!TECH_SYMBOLS.includes(sym)) uiRemember(sym);
+  tech.symbol = sym;
+  techRemember("chart", tech.symbol);
+  tech.data = null;
+  tech.zoom = null;
+  renderTechnicals();
+  loadTechnicals();
+}
+
 /** Persist one chart choice as gexdash-tech-<key>; skipped where storage is
  *  blocked. */
 function techRemember(key, value) {
@@ -361,10 +361,8 @@ function techSyncControls() {
   }).join("");
   $("tech-range").innerHTML = ranges.map((r) => opt(r, r, r === tech.range)).join("");
 
-  // A typed symbol shows in the box; a tab's symbol leaves it empty.
-  const box = $("tech-symbol-input");
-  if (document.activeElement !== box) box.value = TECH_SYMBOLS.includes(tech.symbol) ? "" : tech.symbol;
-  box.classList.toggle("active", !TECH_SYMBOLS.includes(tech.symbol));
+  // The top bar's search shows this view's symbol while it is on screen.
+  if (state.view === "chart") uiShowSymbol(tech.symbol);
 
   const intraday = techIsIntraday(tech.interval);
   const full = techIsFuture(tech.symbol);

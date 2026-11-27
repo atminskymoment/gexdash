@@ -5,14 +5,14 @@
 GEXDASH estimates where options dealers have to hedge, for **SPX, SPY, ES, NDX,
 QQQ, NQ and USO**: GEX, DEX, VANX, CEX, VEX and THEX by strike, the call and
 put walls, the gamma flip, max pain and volume POC, re-priced against live spot
-on every tick. Beside it, a technical chart for **QQQ, SPY, USO, ES and NQ**
-draws averages, Bollinger bands, Supertrend, a volume profile and written-rule
+on every tick. Beside it, a technical chart for **any ticker** (QQQ, SPY, USO,
+ES and NQ are one click away) draws averages, Bollinger bands, Supertrend, a volume profile and written-rule
 signals, from 1-minute to weekly bars. It runs on your own Schwab data, or on
 synthetic data with no account at all.
 
 ![An 18-second preview of GEXDASH](docs/media/gexdash-tour.gif)
 
-**[Watch the narrated tour](docs/media/gexdash-tour.mp4)** (2:51, live data,
+**[Watch the narrated tour](docs/media/gexdash-tour.mp4)** (3:04, live data,
 [subtitles](docs/media/gexdash-tour.srt)) · **[How to use it](docs/how-to-use.md)**
 (install, connect Schwab, every screen explained)
 
@@ -40,9 +40,13 @@ free with a brokerage account.
 |---|---|---|
 | [![Terminal view](docs/images/terminal.png)](docs/images/terminal.png) | [![Columns view](docs/images/columns.png)](docs/images/columns.png) | [![Chart view](docs/images/chart-daily.png)](docs/images/chart-daily.png) |
 
-*Screenshots use the synthetic provider, so the prices are invented.*
+Switch in the sidebar, or link directly with `?view=`. The page follows the
+[AffectUI](https://www.affectui.com/components) design system, recreated in
+plain CSS: a sidebar for the views, a slim top bar with one search for the
+symbol on screen (`/` focuses it), and one toolbar row for the exposure
+settings.
 
-Switch in the header, or link directly with `?view=`:
+*Screenshots use the synthetic provider, so the prices are invented.*
 
 | View | Shape | Use |
 |---|---|---|
@@ -50,8 +54,7 @@ Switch in the header, or link directly with `?view=`:
 | **Columns** | Market bias / spot & levels / zone analysis / signal chart, four panels | Reading the whole exposure surface at once |
 | **Chart** | Full-width chart, 1-minute to weekly: SMMA 20/50/100/200, EMA 9, Bollinger 20/2 + 20/3, Supertrend, volume + volume profile, RSI, MACD, VAMS ribbons, ranges and signals | Reading trend and position for QQQ, SPY, USO, ES, NQ |
 
-**Any ticker.** Type a symbol into the header's Ticker box or the Chart view's
-symbol box: `AAPL`, `BRK.B`, `$RUT`, `/CL`. The seven above carry verified
+**Any ticker.** Type a symbol into the top bar's search, on any view: `AAPL`, `BRK.B`, `$RUT`, `/CL`. The seven above carry verified
 specs. Anything else is priced on stated generic ones: an equity or ETF at
 ×100, American exercise, no dividend unless `div` is passed; a `$` cash index
 European. A typed future such as `/CL` gets charts, unadjusted for rolls, but
@@ -265,7 +268,7 @@ checks pass in light and dark (worst adjacent CVD ΔE 21.6–26.8, target ≥ 8)
 Light is the default; dark is opt-in via the toggle, `?theme=dark`, or the OS
 setting.
 
-**Time zone.** Every time on screen follows the zone tag beside the header
+**Time zone.** Every time on screen follows the zone tag beside the top bar's
 clock: the clock, intraday axis ticks, crosshair tags, legends, readouts and
 signal tooltips, in both the Terminal and Chart views. The tag is the picker.
 It offers New York (exchange time, the default), your machine's own zone, and
@@ -311,7 +314,7 @@ RSI, and falls back to the most recent bar when the pointer is away.
 
 ### The Chart view
 
-A full-width chart for QQQ, SPY, USO, ES and NQ in 1-, 5-, 15- and 30-minute,
+A full-width chart for any ticker, with tabs for QQQ, SPY, USO, ES and NQ, in 1-, 5-, 15- and 30-minute,
 hourly, 4-hour, daily or weekly bars, with
 `?view=chart&chart=USO&chart_range=2Y&chart_interval=1W` to link one. Each
 layer toggles: averages, EMA, both Bollinger bands, ranges, levels, profile,
@@ -449,7 +452,7 @@ gexdash/
   crosscheck.py   diff our greeks against the provider's
   server.py       FastAPI + SSE
   providers/      mock (synthetic) and schwab
-  static/         dashboard + technicals.js + astro.js + draw.js + tz.js — no build step, no CDN, no chart library
+  static/         dashboard + ui.js + technicals.js + astro.js + draw.js + tz.js — no build step, no CDN, no chart library
 docs/             how-to-use · api · methodology · data-sources · architecture
   images/         the guide's screenshots (synthetic data)
   media/          the narrated tour (MP4 + subtitles) and the README preview GIF
@@ -467,7 +470,7 @@ comfortably inside the 2 s stream interval. `scipy` is not a dependency.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q      # 574 tests, ~16s
+python -m pytest tests/ -q      # 583 tests, ~16s
 ```
 
 Covering finite-difference validation of all six greeks, the Black-76

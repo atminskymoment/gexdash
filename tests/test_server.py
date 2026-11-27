@@ -382,6 +382,27 @@ def test_connect_page_is_served(client):
     assert r.status_code == 200
     assert "Authorize with Schwab" in r.text
     assert 'id="redirect-url"' in r.text
+    # Revalidated like the dashboard: a cached page beside new styles breaks quietly.
+    assert "no-cache" in r.headers["cache-control"]
+
+
+def test_the_shell_has_a_sidebar_for_views_and_one_search():
+    from gexdash.providers.mock import MockProvider
+    from gexdash.server import set_provider
+    set_provider(MockProvider())
+    with TestClient(app) as c:
+        html = c.get("/").text
+        assert c.get("/static/ui.js").status_code == 200
+    nav = html[html.index('<aside class="sidenav"'):html.index("</aside>")]
+    for v in ("terminal", "columns", "chart"):
+        assert f'id="view-{v}-btn"' in nav and f'data-view="{v}"' in nav
+    assert 'href="/connect"' in nav
+    # One ticker search, a combobox, in the top bar; the Chart view has no box of its own.
+    top = html[html.index('<header class="topbar">'):html.index("</header>")]
+    assert html.count('id="f-symbol"') == 1 and 'id="f-symbol"' in top and 'role="combobox"' in top
+    assert 'id="tech-symbol-input"' not in html
+    # ui.js loads after tz.js and before the scripts that use it.
+    assert html.index("/static/tz.js") < html.index("/static/ui.js") < html.index("/static/draw.js") < html.index("/static/app.js")
 
 
 def test_auth_status_never_leaks_a_secret(client, monkeypatch, tmp_path):

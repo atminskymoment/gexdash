@@ -1347,17 +1347,17 @@ function drawToolbar(el, host, frame) {
   drawBoot();
   DRAW_BARS.push({ el, host, frame });
   const groupBtn = (g) => `<div class="draw-group" data-group="${g.key}">
-      <button class="draw-btn" data-open="${g.key}" title="${drawEsc(g.label)}" aria-haspopup="true">${drawIcon(g.key === "cursor" ? "cross" : g.key)}</button>
+      <button class="draw-btn" data-open="${g.key}" aria-label="${drawEsc(g.label)}" data-tip="${drawEsc(g.label)}" data-tip-side="right" aria-haspopup="menu" aria-expanded="false">${drawIcon(g.key === "cursor" ? "cross" : g.key)}</button>
       <div class="draw-menu" role="menu" hidden>
         <div class="draw-menu-head">${drawEsc(g.label)}</div>
         ${Object.entries(DRAW_TOOLS).filter(([, t]) => t.group === g.key).map(([k, t]) =>
-          `<button role="menuitemradio" data-tool="${k}" title="${drawEsc(t.tip)}">${t.cursor ? drawIcon(k) : ""}<span>${drawEsc(t.name)}</span></button>`).join("")}
+          `<button role="menuitemradio" data-tool="${k}" data-tip="${drawEsc(t.tip)}" data-tip-side="right">${t.cursor ? drawIcon(k) : ""}<span>${drawEsc(t.name)}</span></button>`).join("")}
       </div></div>`;
   el.innerHTML = DRAW_GROUPS.map(groupBtn).join("") + `<div class="draw-sep"></div>
-    <button class="draw-btn" data-act="magnet" title="Magnet: snap points to the nearest open, high, low or close">${drawIcon("magnet")}</button>
-    <button class="draw-btn" data-act="lock" title="Lock all drawings: they can no longer be selected, moved or erased">${drawIcon("lock")}</button>
-    <button class="draw-btn" data-act="hide" title="Hide all drawings">${drawIcon("eye")}</button>
-    <button class="draw-btn" data-act="remove" title="Remove the selected drawing; with none selected, remove all of this symbol's (click twice)">${drawIcon("trash")}</button>`;
+    <button class="draw-btn" data-act="magnet" data-tip-side="right">${drawIcon("magnet")}</button>
+    <button class="draw-btn" data-act="lock" data-tip-side="right">${drawIcon("lock")}</button>
+    <button class="draw-btn" data-act="hide" data-tip-side="right">${drawIcon("eye")}</button>
+    <button class="draw-btn" data-act="remove" data-tip-side="right">${drawIcon("trash")}</button>`;
   el.addEventListener("click", (ev) => {
     const b = ev.target.closest("button");
     if (!b) return;
@@ -1366,6 +1366,7 @@ function drawToolbar(el, host, frame) {
       const was = !menu.hidden;
       drawCloseMenus();
       menu.hidden = was;
+      b.setAttribute("aria-expanded", String(!was));
       return;
     }
     if (b.dataset.tool) { drawCloseMenus(); return drawSetTool(b.dataset.tool); }
@@ -1398,6 +1399,7 @@ function drawRemove(host) {
 
 function drawCloseMenus() {
   document.querySelectorAll(".draw-menu").forEach((m) => (m.hidden = true));
+  document.querySelectorAll(".draw-btn[data-open]").forEach((b) => b.setAttribute("aria-expanded", "false"));
 }
 
 /** Bring every toolbar in line with the state: pressed buttons, the group
@@ -1415,13 +1417,15 @@ function drawSyncBars() {
       btn.innerHTML = drawIcon(icon);
       g.querySelectorAll("[data-tool]").forEach((t) => t.setAttribute("aria-checked", String(t.dataset.tool === draw.tool)));
     });
-    const set = (act, on, icon, title) => {
+    // Each says what it does as its label and its tooltip; pressed shows state.
+    const set = (act, on, icon, label) => {
       const b = el.querySelector(`[data-act="${act}"]`);
       b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
       if (icon) b.innerHTML = drawIcon(icon);
-      if (title) b.title = title;
+      if (label) { b.dataset.tip = label; b.setAttribute("aria-label", label); }
     };
-    set("magnet", draw.magnet);
+    set("magnet", draw.magnet, null, "Magnet: snap points to the nearest open, high, low or close");
     set("lock", draw.lock, draw.lock ? "lock" : "unlock", draw.lock ? "Unlock all drawings" : "Lock all drawings: they can no longer be selected, moved or erased");
     set("hide", draw.hide, draw.hide ? "eyeoff" : "eye", draw.hide ? "Show all drawings" : "Hide all drawings");
     const ch = Object.values(draw.charts).find((c) => c.A.host === host);
@@ -1430,8 +1434,10 @@ function drawSyncBars() {
     const rm = el.querySelector('[data-act="remove"]');
     rm.classList.toggle("armed", armed && !draw.selected);
     rm.disabled = draw.lock || (!draw.selected && !count);
-    rm.title = draw.selected ? "Remove the selected drawing (or press Delete)"
+    const rmLabel = draw.selected ? "Remove the selected drawing (or press Delete)"
       : armed ? `Click again to remove all ${count} drawing${count === 1 ? "" : "s"} of this symbol`
       : `Remove all ${count} drawing${count === 1 ? "" : "s"} of this symbol (click twice)`;
+    rm.dataset.tip = rmLabel;
+    rm.setAttribute("aria-label", rmLabel);
   }
 }

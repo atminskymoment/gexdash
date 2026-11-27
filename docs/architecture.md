@@ -83,13 +83,46 @@ OI surface is usable; a 502 is not.
 
 ## Frontend
 
-No framework, no build step, no CDN — one HTML file, one CSS file, five JS
-files, and hand-rolled SVG charts. `tz.js` (the display zone), `astro.js` (the
-Moon/Sun layer), `draw.js` (the drawing tools) and `technicals.js` (the Chart
-view) load before `app.js` and only define functions; `app.js` owns startup.
-Every top-level name in them is prefixed `tz`, `astro`/`ASTRO_`, `draw`/`DRAW_`
-or `tech`/`TECH_`, because classic scripts share one global scope and a
-duplicate `const` stops the second file loading.
+No framework, no build step, no CDN — one HTML file, one CSS file, six JS
+files, and hand-rolled SVG charts. `tz.js` (the display zone), `ui.js` (the
+app shell), `astro.js` (the Moon/Sun layer), `draw.js` (the drawing tools) and
+`technicals.js` (the Chart view) load before `app.js` and only define
+functions; `app.js` owns startup. Every top-level name in them is prefixed
+`tz`, `ui`/`UI_`, `astro`/`ASTRO_`, `draw`/`DRAW_` or `tech`/`TECH_`, because
+classic scripts share one global scope and a duplicate `const` stops the
+second file loading.
+
+### The app shell (AffectUI)
+
+The chrome follows the [AffectUI](https://www.affectui.com/components) design
+system, recreated in `styles.css` from the values in its component sources:
+neutral surfaces and inks, hairline rings instead of borders, 16/10/9/8px
+radii, its button, field, segmented-control, switch, badge, menu, tooltip and
+keyboard-chip styles, focus rings only under the keyboard, and reduced
+motion. Its React components are not used, so there is still no build step.
+The data colours are not AffectUI's: they are this project's validated
+palettes, re-checked against AffectUI's surfaces (#ffffff, #19191b). Inter is
+first in the font stack but not bundled, as nothing is fetched from a CDN;
+without it the system face stands in.
+
+`index.html` is a grid: a sidebar (the three views as `<nav>` buttons with
+`aria-current`, then Connect, API docs and How to use) and a main column with
+the top bar (one search, the clock and phase, one status badge, theme), the
+exposure toolbar and the views. `ui.js` holds what needs script:
+
+- **Sidebar**: expanded or an icon rail, remembered, rail by default under
+  1100px. The width snaps rather than animates, and `app.js` re-lays the
+  charts out from a `ResizeObserver` on the main column, since a collapse
+  changes their width without a window resize. That includes a Terminal
+  drawn from bars alone.
+- **Tooltips** on `[data-tip]`: a 500ms hover delay, at once under keyboard
+  focus, hidden on press, scroll or Escape. Icon-only controls also carry an
+  `aria-label`; SVG `<title>` tooltips on chart marks stay native.
+- **Search**: a combobox (`role="combobox"`, listbox, active descendant) over
+  the registered and recently typed symbols. It commits on Enter or a pick,
+  never on blur, and edits the symbol of the view on screen: `selectSymbol`
+  on the Terminal and Columns, `techSelectSymbol` on the Chart view, which
+  keeps its own. `/` focuses it from anywhere that is not a field.
 
 ### Drawing tools on both price charts
 
@@ -213,6 +246,8 @@ python -m pytest tests/ -q
 | `test_cycles.py` | The fit recovers a planted lunar effect's amplitude and timing and its holdout sees it; pure noise stays inside the noise band and is scored against the no-skill mix, not 50%; no lookahead (the fit is identical whatever the chart or horizon); roll days left out; cash-close reading across daylight saving, weekly and monthly period ends; future dates; zigzag turns; the path is the last close moved by ΔLSC and turns where d1 changes sign; no weekend steps in d2; each event at the first slot closing after it; both endpoints, and unchanged payloads without `astro` |
 | `test_symbols.py` | Registered symbols and their aliases (`/ES`, `$SPX`) return the verified spec object; a typed equity, cash index and future get exactly the stated generic specs; malformed symbols are refused while `get()` stays strict; a typed equity gets a full surface whose strikes never reach zero; typed tickers draw different synthetic series; a typed future is refused exposure (422) before any stream opens and serves bars unadjusted, with a note; ES and NQ still adjust |
 | `test_draw.py` | Under Node: future dates on the server's rule; slot <-> time round trips inside, past and before the bars; Fibonacci retracement and extension prices and time zones; Andrews, Schiff and Modified Schiff origins; Gann slopes; regression ±2σ; anchored VWAP; the fixed-range profile conserves volume and its value area holds 70%; position reward, risk and ratio; hit-testing and stroke thinning; every tool renders clickable geometry at every stage of placing it; storage survives corrupt JSON, blocked storage and malformed drawings |
+| `test_ui.py` | Both dark themes set the same tokens, and no component rule is keyed on the theme toggle, so OS dark mode, which only swaps tokens, cannot miss one; under Node, the search puts the best match first ("nd" gives NDX before the literal look-up, and "Index" does not match "nd"), lists recent symbols once, newest first, and survives garbage in storage |
+| `test_server.py` (shell) | The sidebar holds the three views and Connect; one combobox search sits in the top bar and the Chart view has no box of its own; `ui.js` loads after `tz.js` and before `draw.js` and `app.js`; `/connect` is served no-cache |
 | `test_technicals.py` | SMMA is Wilder, Bollinger is population stdev, ATR uses the previous close; VAMS latching and decay; bases, breakouts and cooldown; one-position BUY/ADD/TRIM/SELL; profile conserves volume; warm-up leaves no gaps in the window; Supertrend against a hand-worked Pine evaluation, including its previous-band comparisons; hourly/4-hour anchoring (across a DST change), session-counted ranges, regular-hours default for ETFs, full session for futures; the endpoint for all five symbols, one fetch shared across ranges and across 30m/1h/4h |
 
 ### Regression tests worth knowing about

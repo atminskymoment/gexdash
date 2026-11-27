@@ -39,6 +39,7 @@ you would go on believing it applied.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, replace
 
 
@@ -85,6 +86,16 @@ class Instrument:
     #: Eversource Energy at ~$71, which as an "E-mini S&P 500 future" at
     #: x$50 with Black-76 would produce entirely plausible-looking garbage.
     plausible_spot: tuple[float, float] = (0.01, 1e9)
+    #: Rolls on the CME equity-index quarterly calendar (the Monday of expiry
+    #: week), so ``futures.back_adjust`` applies. True for ES and NQ only: a
+    #: typed future such as /CL rolls monthly on its own calendar.
+    quarterly_rolls: bool = False
+    #: Built by :func:`resolve` for a typed symbol that is not registered,
+    #: from stated defaults rather than a verified contract spec.
+    generic: bool = False
+    #: Why exposure cannot be computed for this instrument, or None when it
+    #: can. Set for typed futures, whose contract multiplier is unknown.
+    exposure_unavailable: str | None = None
 
     @property
     def is_future(self) -> bool:
@@ -158,6 +169,7 @@ ES = Instrument(
     display_strikes=30,
     european=False,
     plausible_spot=(1000, 50000),
+    quarterly_rolls=True,
 )
 
 # ------------------------------------------------------------- Nasdaq 100
@@ -217,6 +229,7 @@ NQ = Instrument(
     display_strikes=50,
     european=False,
     plausible_spot=(5000, 200000),
+    quarterly_rolls=True,
 )
 
 
@@ -325,3 +338,73 @@ def get(key: str) -> Instrument:
 def all_instruments() -> list[Instrument]:
     """Every registered instrument, overrides applied, in registry order."""
     return list(REGISTRY.values())
+
+
+# ----------------------------------------------------------- typed symbols
+
+#: A symbol a user may type: an equity or ETF ("AAPL", "BRK.B"), a cash index
+#: ("$RUT") or a future ("/CL"). Letters first, then letters, digits or dots.
+#: Anything else is refused rather than sent to a provider.
+SYMBOL_PATTERN = re.compile(r"^[$/]?[A-Z][A-Z0-9.]{0,11}$")
+
+_GENERIC: dict[str, Instrument] = {}
+
+
+def _generic(symbol: str) -> Instrument:
+    """Stated default specs for an unregistered symbol. See :func:`resolve`."""
+    if symbol.startswith("/"):
+        return Instrument(
+            key=symbol, label=f"{symbol} (future; generic specs)", multiplier=1.0, model="future",
+            strike_step=0.0, quote_symbol=symbol, chain_symbol=symbol, european=False,
+            default_dividend_yield=0.0, plausible_spot=(1e-4, 1e9), generic=True,
+            exposure_unavailable=(
+                f"exposure needs the contract multiplier, which gexdash does not know for {symbol}; "
+                "ES and NQ are the futures it carries specs for. The price charts work."),
+        )
+    if symbol.startswith("$"):
+        return Instrument(
+            key=symbol, label=f"{symbol} (cash index; generic specs)", multiplier=100.0,
+            model="index", strike_step=0.0, quote_symbol=symbol, chain_symbol=symbol,
+            european=True, default_dividend_yield=0.0, plausible_spot=(1e-4, 1e9), generic=True,
+        )
+    return Instrument(
+        key=symbol, label=f"{symbol} (equity or ETF; generic specs)", multiplier=100.0,
+        model="index", strike_step=0.0, quote_symbol=symbol, chain_symbol=symbol,
+        european=False, default_dividend_yield=0.0, plausible_spot=(1e-4, 1e9), generic=True,
+    )
+
+
+def resolve(symbol: str) -> Instrument:
+    """The instrument for anything a user may type.
+
+    A registered key (``SPX``) or a registered provider symbol (``/ES``,
+    ``$SPX``) returns that verified spec, overrides applied. Any other
+    well-formed symbol (:data:`SYMBOL_PATTERN`) gets generic specs, stated
+    in its label and the payload rather than verified:
+
+    * ``AAPL``, ``BRK.B``: an equity or ETF. x100, American exercise (the
+      greeks are European, as for SPY), no dividend unless one is passed.
+    * ``$RUT``: a cash index. x100, European, cash-settled. Not right for an
+      index whose options are priced off its futures, such as VIX: Black-
+      Scholes on the spot index gives wrong greeks there.
+    * ``/CL``: a future. Its contract multiplier is unknown, so exposure is
+      refused (``exposure_unavailable``) and only bars are served, without
+      roll adjustment.
+
+    The same symbol always returns the same object. A malformed symbol raises
+    KeyError, as :func:`get` does for an unknown key; :func:`get` itself stays
+    strict, for code that must only ever see registered specs.
+    """
+    key = (symbol or "").strip().upper()
+    if key in REGISTRY:
+        return REGISTRY[key]
+    for inst in REGISTRY.values():
+        if key in (inst.quote_symbol.upper(), inst.chain_symbol.upper()):
+            return inst
+    if not SYMBOL_PATTERN.match(key):
+        raise KeyError(
+            f"{symbol!r} is not a symbol gexdash can look up: letters first, then letters, digits "
+            "or dots, with $ for a cash index or / for a future (AAPL, BRK.B, $RUT, /CL)")
+    if key not in _GENERIC:
+        _GENERIC[key] = _generic(key)
+    return _GENERIC[key]

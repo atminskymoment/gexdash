@@ -327,6 +327,28 @@ plausible:
   American for consistency with the CME futures instruments: different
   product, different rule.
 
+### Typed symbols
+
+Any other symbol can be typed (`instruments.resolve`). It is priced on
+**stated defaults, not a verified spec**, and the Terminal's strip says so:
+
+| Typed | Multiplier | Model | Exercise | Dividend |
+|---|---|---|---|---|
+| `AAPL`, `BRK.B` (equity, ETF) | ×100 | Black-Scholes | American (European greeks, as SPY) | 0 unless `div` is passed |
+| `$RUT` (cash index) | ×100 | Black-Scholes | European | 0 |
+| `/CL` (future) | unknown | — | — | exposure refused; bars only |
+
+Index options priced off futures rather than the spot index, such as VIX's,
+are mis-modelled under these specs: Black-Scholes on the spot gives wrong
+greeks. Contract multipliers outside these vary (mini options, adjusted contracts
+after a split or merger), and a wrong one is a pure scale error that never
+looks wrong; check the chain before trusting a typed symbol's dollar figures.
+Typed futures are served as the feed sends them: gexdash knows the roll
+calendar only for ES and NQ. Class shares are passed through as typed
+(`BRK.B`); whether Schwab expects `BRK.B` or `BRK/B` has not been checked
+against the live API. The mock provider synthesizes any typed symbol, with a
+price and walk derived from its name, so two tickers never draw the same chart.
+
 ### Overriding exercise style
 
 Any instrument can be flipped without editing code:

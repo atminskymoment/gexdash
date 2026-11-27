@@ -42,7 +42,7 @@ whole surface live without a live OI feed, which does not exist at any price.
 | `american.py` | CRR binomial, used **only** to bound the European-approximation error, and the two per-model disclosure notes. Not in the hot path. |
 | `chain.py` | `OptionChain`: parallel numpy arrays, not a list of objects. `with_spot()` shares arrays rather than copying. |
 | `exposure.py` | The engine: per-strike exposure, walls, flip, max pain, concentration, regime. All modelling choices live in `ExposureConfig`. |
-| `instruments.py` | Per-instrument specs — multiplier, model, exercise style, strike step, display width, dividend default. Exercise style is overridable via `GEXDASH_EXERCISE_OVERRIDES`. |
+| `instruments.py` | Per-instrument specs — multiplier, model, exercise style, strike step, display width, dividend default. Exercise style is overridable via `GEXDASH_EXERCISE_OVERRIDES`. `resolve()` takes anything a user types: a registered key or provider alias returns the verified spec, any other well-formed symbol stated generic specs (`generic`, and `exposure_unavailable` for a typed future); `get()` stays strict. `quarterly_rolls` marks the two futures whose roll calendar is known. |
 | `sessions.py` | US exchange session dates and market phase. OI is published on that clock, which is neither UTC nor local. Also which session each bar belongs to (a futures session opening Sunday 18:00 is Monday's), and trimming a series to its last N sessions. |
 | `futures.py` | Continuous-futures roll dates (the Monday of expiry week) and back-adjustment for contract changes as thinkorswim defines it. Returns adjusted copies, so cached raw series are never altered. |
 | `store.py` | SQLite chain cache + `CachedProvider`, and the breadth sample table that accumulates the session A/D line. Also owns degradation policy: detecting a chain with no open interest, refusing to cache it, falling back to the last usable snapshot, and backing off before retrying. Not a scheduler. |
@@ -83,12 +83,45 @@ OI surface is usable; a 502 is not.
 
 ## Frontend
 
-No framework, no build step, no CDN — one HTML file, one CSS file, four JS
+No framework, no build step, no CDN — one HTML file, one CSS file, five JS
 files, and hand-rolled SVG charts. `tz.js` (the display zone), `astro.js` (the
-Moon/Sun layer) and `technicals.js` (the Chart view) load before `app.js` and
-only define functions; `app.js` owns startup. Every top-level name in them is
-prefixed `tz`, `astro`/`ASTRO_` or `tech`/`TECH_`, because classic scripts
-share one global scope and a duplicate `const` stops the second file loading.
+Moon/Sun layer), `draw.js` (the drawing tools) and `technicals.js` (the Chart
+view) load before `app.js` and only define functions; `app.js` owns startup.
+Every top-level name in them is prefixed `tz`, `astro`/`ASTRO_`, `draw`/`DRAW_`
+or `tech`/`TECH_`, because classic scripts share one global scope and a
+duplicate `const` stops the second file loading.
+
+### Drawing tools on both price charts
+
+`draw.js` stores each drawing as points in time and price per symbol
+(localStorage), never in pixels. Each chart calls `drawAttach()` after every
+render with its plot box, slot-to-x and price-to-y maps and bar stamps; the
+module turns them into an adapter and draws its layer into the new SVG, just
+under the crosshair and clipped to the price plot. Slots past the last bar
+follow the server's future-date rule (`cycles.future_stamps`), so a drawing
+there matches the Moon/Sun layer's dates whether or not that layer is on;
+slots before the first bar follow the same rule backwards, so a drawing from
+a longer range keeps its spacing on a shorter one.
+Pointer handling sits on the chart's stable host element in the capture
+phase, so a drawing click never also starts the chart's pan, and the
+listeners outlive each render's SVG. Hit-testing is done in code on the
+segments and fills each tool returns, with lines winning over another
+drawing's shading. The toolbar sits beside a wrapper holding the Terminal's
+price chart *and* its indicator panes, because the panes reuse the price
+chart's width. Nothing in the file touches the DOM or storage until
+`drawInit()`, so its geometry runs under Node in the tests.
+
+### Typed symbols
+
+The Terminal's ticker is a type-in box with the registered symbols as
+suggestions; `/api/symbol` checks a typed one before anything is fetched. A
+symbol with no exposure payload (a typed future, or a stock whose chain does
+not load) clears the exposure panels with the reason rather than leaving the
+previous symbol's numbers under the new name, and its candles still draw:
+`renderPriceChart` needs only bars, and draws levels only from a payload for
+the same symbol. The Chart view's five tabs are quick picks beside a symbol
+box; its session and roll controls follow the payload's `future` and
+`quarterly_rolls` rather than a fixed list.
 
 ### The Moon/Sun layer on both price charts
 
@@ -178,6 +211,8 @@ python -m pytest tests/ -q
 | `test_tz.py` | The display zone, run under Node (skipped without it): exchange time by default, half-hour offsets, crossing midnight, daylight-saving tags (BST, CEST, AEDT) and New York's skipped hour, unknown zones falling back, ICU's alias for Kolkata keeping India's entry; the page loads `tz.js` first |
 | `test_astro.py` | The Moon against Meeus example 47.a (longitude to 5e-6°, distance to 0.1 km), the Sun against 25.a, illumination against 48.a; new and full moons (the 2024 eclipses, Meeus 49.a) within 2 minutes, the 2024 equinoxes and solstices within 15; a year of events in order, with perigee and apogee alternating at plausible distances |
 | `test_cycles.py` | The fit recovers a planted lunar effect's amplitude and timing and its holdout sees it; pure noise stays inside the noise band and is scored against the no-skill mix, not 50%; no lookahead (the fit is identical whatever the chart or horizon); roll days left out; cash-close reading across daylight saving, weekly and monthly period ends; future dates; zigzag turns; the path is the last close moved by ΔLSC and turns where d1 changes sign; no weekend steps in d2; each event at the first slot closing after it; both endpoints, and unchanged payloads without `astro` |
+| `test_symbols.py` | Registered symbols and their aliases (`/ES`, `$SPX`) return the verified spec object; a typed equity, cash index and future get exactly the stated generic specs; malformed symbols are refused while `get()` stays strict; a typed equity gets a full surface whose strikes never reach zero; typed tickers draw different synthetic series; a typed future is refused exposure (422) before any stream opens and serves bars unadjusted, with a note; ES and NQ still adjust |
+| `test_draw.py` | Under Node: future dates on the server's rule; slot <-> time round trips inside, past and before the bars; Fibonacci retracement and extension prices and time zones; Andrews, Schiff and Modified Schiff origins; Gann slopes; regression ±2σ; anchored VWAP; the fixed-range profile conserves volume and its value area holds 70%; position reward, risk and ratio; hit-testing and stroke thinning; every tool renders clickable geometry at every stage of placing it; storage survives corrupt JSON, blocked storage and malformed drawings |
 | `test_technicals.py` | SMMA is Wilder, Bollinger is population stdev, ATR uses the previous close; VAMS latching and decay; bases, breakouts and cooldown; one-position BUY/ADD/TRIM/SELL; profile conserves volume; warm-up leaves no gaps in the window; Supertrend against a hand-worked Pine evaluation, including its previous-band comparisons; hourly/4-hour anchoring (across a DST change), session-counted ranges, regular-hours default for ETFs, full session for futures; the endpoint for all five symbols, one fetch shared across ranges and across 30m/1h/4h |
 
 ### Regression tests worth knowing about

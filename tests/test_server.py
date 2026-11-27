@@ -82,7 +82,7 @@ def test_all_model_options(client, sign, flip):
 
 
 def test_unknown_symbol_404(client):
-    assert client.get("/api/exposure?symbol=NOPE").status_code == 404
+    assert client.get("/api/exposure?symbol=NOPE!").status_code == 404
 
 
 def test_bad_expiry_window_400(client):
@@ -283,7 +283,7 @@ def test_history_surfaces_a_typed_unavailable(client, tmp_path):
 
 
 def test_history_unknown_symbol_404(client):
-    assert client.get("/api/history?symbol=NOPE").status_code == 404
+    assert client.get("/api/history?symbol=NOPE!").status_code == 404
 
 
 def test_meta_lists_every_view(client):

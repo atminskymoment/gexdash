@@ -15,6 +15,7 @@ market observation.
 
 from __future__ import annotations
 
+import zlib
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -72,6 +73,28 @@ class MockProvider:
 
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _symbol_hash(instrument: Instrument) -> int:
+        """A stable per-symbol number for typed (generic) symbols; 0 for the
+        registered ones, whose synthetic series stay exactly as they were."""
+        return zlib.crc32(instrument.key.encode()) if instrument.generic else 0
+
+    def _anchor(self, instrument: Instrument) -> float:
+        """The price a synthetic series is built around. A typed symbol gets
+        one from its name, log-uniform between $10 and $2,000, so two tickers
+        never draw the same chart."""
+        if self._spot_override:
+            return self._spot_override
+        if instrument.key in DEFAULT_SPOT:
+            return DEFAULT_SPOT[instrument.key]
+        h = self._symbol_hash(instrument)
+        return round(10 ** (1 + 2.3 * (h % 10_000) / 10_000), 2) if h else 100.0
+
+    @staticmethod
+    def _atm_vol(instrument: Instrument) -> float:
+        """ATM vol: per registered instrument, or a single stock's ~28%."""
+        return DEFAULT_ATM_VOL.get(instrument.key, 0.28 if instrument.generic else 0.115)
+
     def get_spot(self, instrument: Instrument) -> float:
         """The instrument's anchor price plus a random walk, rounded to cents.
 
@@ -79,7 +102,7 @@ class MockProvider:
         consecutive ticks look live. It draws from the provider's single
         generator, so the path depends on the seed and on every draw before it.
         """
-        base = self._spot_override or DEFAULT_SPOT.get(instrument.key, 100.0)
+        base = self._anchor(instrument)
         # Proportional random walk, capped at +/-0.35%. An absolute step would
         # be 3% on a $776 ETF and invisible on a 29,800 index.
         self._drift = float(np.clip(self._drift + self._rng.normal(0, 4.5e-5), -0.0035, 0.0035))
@@ -158,12 +181,12 @@ class MockProvider:
         else:
             n = max(int(lookback_hours * 60 / max(interval_minutes, 1)), 30)
 
-        base = self._spot_override or DEFAULT_SPOT.get(instrument.key, 100.0)
-        rng = np.random.default_rng(self.seed + 1_000)
+        base = self._anchor(instrument)
+        rng = np.random.default_rng(self.seed + 1_000 + self._symbol_hash(instrument))
 
         # Per-bar vol scaled off the instrument's ATM level, annualised ->
         # per-interval, so NDX candles are visibly wider than SPX's.
-        annual = DEFAULT_ATM_VOL.get(instrument.key, 0.115)
+        annual = self._atm_vol(instrument)
         bars_per_year = 252 * 390 / max(interval_minutes, 1)
         per_bar = annual / np.sqrt(max(bars_per_year, 1.0))
 
@@ -217,16 +240,23 @@ class MockProvider:
         its spot is the fixed anchor rather than the walk from :meth:`get_spot`. A call wall one strike above the
         money and a put wall one below are planted on the front expiry.
         """
-        rng = np.random.default_rng(self.seed)
-        spot = self._spot_override or DEFAULT_SPOT.get(instrument.key, 100.0)
+        rng = np.random.default_rng(self.seed + self._symbol_hash(instrument))
+        spot = self._anchor(instrument)
         now = datetime.now(timezone.utc)
 
         step = instrument.strike_step
+        if step <= 0:
+            # A typed symbol has no spec step: about 0.5% of spot, on the
+            # 1-2.5-5 ladder listed strikes use.
+            raw = spot * 0.005
+            mag = 10 ** np.floor(np.log10(raw))
+            step = float(next(m * mag for m in (1, 2.5, 5, 10) if m * mag >= raw))
         atm = round(spot / step) * step
         # Width is per-instrument: the reference dashboard shows 61 strikes for
         # ES and 101 for NQ, because strike density differs enormously.
         half = instrument.display_strikes
         strikes = np.arange(atm - half * step, atm + (half + 1) * step, step)
+        strikes = strikes[strikes > 0]          # a grid around a cheap stock must not reach zero
 
         expiries = self._expiries(now, max_dte)
         rows: list[dict] = []
@@ -235,7 +265,7 @@ class MockProvider:
             t = max(dte, 0.5) / 365.0
             # Base ATM vol: term structure rising with maturity, plus the
             # elevated 0DTE level that short-dated index options carry.
-            base = DEFAULT_ATM_VOL.get(instrument.key, 0.115)
+            base = self._atm_vol(instrument)
             atm_vol = base + 0.055 * np.sqrt(t * 12) + (0.035 if dte < 1.5 else 0.0)
 
             for k in strikes:

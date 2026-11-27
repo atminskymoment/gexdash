@@ -519,7 +519,7 @@ def test_technicals_weekly(client):
 
 
 def test_technicals_bad_requests(client):
-    assert client.get("/api/technicals?symbol=NOPE").status_code == 404
+    assert client.get("/api/technicals?symbol=NOPE!").status_code == 404
     assert client.get("/api/technicals?symbol=QQQ&interval=2m").status_code == 400
     assert client.get("/api/technicals?symbol=QQQ&range=9Y").status_code == 400
     assert client.get("/api/technicals?symbol=QQQ&session=overnight").status_code == 422

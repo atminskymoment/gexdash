@@ -39,7 +39,11 @@
 
   <div class="field ticker-field">
     <label for="f-symbol">Ticker</label>
-    <select id="f-symbol" class="ticker"></select>
+    <!-- Any symbol: the registered ones are suggested, anything else is typed
+         (AAPL, BRK.B, $RUT, /CL) and checked by /api/symbol. -->
+    <input id="f-symbol" class="ticker" list="symbol-list" autocomplete="off" spellcheck="false"
+      autocapitalize="characters" placeholder="Ticker…" title="Type any ticker and press Enter: AAPL, BRK.B, $RUT, /CL">
+    <datalist id="symbol-list"></datalist>
   </div>
   <button id="btn-theme" title="Toggle light / dark">◐</button>
 </header>
@@ -125,11 +129,18 @@
       </div>
       <div class="muted small" id="plan-note"></div>
 
-      <div class="chart-wrap">
-        <div id="price-chart"></div>
-        <div id="chart-readout" class="readout" aria-live="off"></div>
+      <!-- Drawing tools (draw.js) sit left of the chart and its panes together:
+           the panes reuse the price chart's width, so both must narrow alike. -->
+      <div class="draw-frame" id="draw-frame-terminal">
+        <div class="draw-bar" id="draw-bar-terminal" role="toolbar" aria-label="Drawing tools" aria-orientation="vertical"></div>
+        <div class="draw-main draw-area">
+          <div class="chart-wrap">
+            <div id="price-chart"></div>
+            <div id="chart-readout" class="readout" aria-live="off"></div>
+          </div>
+          <div id="indicator-panes"></div>
+        </div>
       </div>
-      <div id="indicator-panes"></div>
 
       <section id="reading" class="reading" hidden>
         <div class="reading-head">
@@ -263,6 +274,9 @@
   <section class="card tech-card">
     <div class="tech-toolbar">
       <div class="seg tech-symbols" id="tech-symbols" role="tablist" aria-label="Chart symbol"></div>
+      <input id="tech-symbol-input" class="tech-symbol-input" autocomplete="off" spellcheck="false"
+        autocapitalize="characters" placeholder="Symbol…" aria-label="Any symbol"
+        title="Type any symbol and press Enter: AAPL, BRK.B, $RUT, /CL">
       <label class="csel"><span>Range</span><select id="tech-range"></select></label>
       <label class="csel"><span>Interval</span><select id="tech-interval"></select></label>
       <button id="tech-session" class="tech-session" aria-pressed="false" hidden
@@ -278,9 +292,12 @@
       </div>
     </div>
     <div class="muted small" id="tech-note"></div>
-    <div class="tech-wrap">
-      <div id="tech-chart"></div>
-      <div id="tech-legend" class="tech-legend" aria-live="off"></div>
+    <div class="draw-frame" id="draw-frame-tech">
+      <div class="draw-bar" id="draw-bar-tech" role="toolbar" aria-label="Drawing tools" aria-orientation="vertical"></div>
+      <div class="tech-wrap draw-area">
+        <div id="tech-chart"></div>
+        <div id="tech-legend" class="tech-legend" aria-live="off"></div>
+      </div>
     </div>
     <details class="reading-caveats tech-rules-box">
       <summary>How the signals are defined — gexdash rules, not the reference chart's script</summary>
@@ -305,9 +322,10 @@
 
 <div class="tooltip" id="tooltip"></div>
 
-<!-- tz.js, astro.js and technicals.js only define functions; app.js runs startup. -->
+<!-- tz.js, astro.js, draw.js and technicals.js only define functions; app.js runs startup. -->
 <script src="/static/tz.js"></script>
 <script src="/static/astro.js"></script>
+<script src="/static/draw.js"></script>
 <script src="/static/technicals.js"></script>
 <script src="/static/app.js"></script>
 </body>

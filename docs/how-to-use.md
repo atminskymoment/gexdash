@@ -24,10 +24,11 @@ data, so their prices are invented.
 4. [Terminal view](#4-terminal-view)
 5. [Columns view](#5-columns-view)
 6. [Chart view](#6-chart-view)
-7. [Time zone](#7-time-zone)
-8. [Light and dark](#8-light-and-dark)
-9. [Links you can share](#9-links-you-can-share)
-10. [Troubleshooting](#10-troubleshooting)
+7. [Drawing on the charts](#7-drawing-on-the-charts)
+8. [Time zone](#8-time-zone)
+9. [Light and dark](#9-light-and-dark)
+10. [Links you can share](#10-links-you-can-share)
+11. [Troubleshooting](#11-troubleshooting)
 
 ---
 
@@ -100,11 +101,11 @@ The header is the same in every view.
 | Part | What it does |
 |---|---|
 | **Terminal · Columns · Chart** | Switches the view. Your choice is remembered. |
-| **Clock and zone tag** | The time in the zone you pick (New York by default). The tag beside it is the [zone picker](#7-time-zone). |
+| **Clock and zone tag** | The time in the zone you pick (New York by default). The tag beside it is the [zone picker](#8-time-zone). |
 | **Phase** | Pre-market, open, after-hours or closed, and the time to the next change, on the exchange's clock. |
 | **Provider badge** | `mock` (synthetic) or `schwab`. |
 | **Paused / streaming** | Whether the exposure surface is live-streaming. |
-| **Ticker** | The instrument for the Terminal and Columns views: SPX, SPY, ES, NDX, QQQ, NQ or USO. |
+| **Ticker** | The instrument for the Terminal and Columns views. Pick SPX, SPY, ES, NDX, QQQ, NQ or USO from the suggestions, or type any symbol and press Enter: `AAPL`, `BRK.B`, `$RUT` for a cash index, `/CL` for a future. A typed symbol is priced on stated generic specs, shown in the strip; a typed future has charts but no exposure, because its multiplier is unknown. |
 | **◐** | Light or dark. |
 
 ## 4. Terminal view
@@ -282,7 +283,65 @@ of the price pane at each change.
 
 ![ES, two years of daily bars, with roll marks](images/chart-futures-rolls.png)
 
-## 7. Time zone
+## 7. Drawing on the charts
+
+Both price charts, the Terminal's and the Chart view's, have a drawing
+toolbar down their left side. A drawing belongs to its symbol, not to the
+chart: draw on QQQ in the Chart view and it is on QQQ in the Terminal too, at
+any bar size. Drawings are kept in this browser. A point outside the bars a
+chart has loaded (a drawing from a 1Y chart viewed on 3M, or one past the
+last bar) is placed by the calendar: weekdays for daily bars with holidays not
+modelled, and on intraday bars by the bar size, without a session calendar.
+There it is close, not exact.
+
+| Group | Tools |
+|---|---|
+| Cursors | Cross, Dot, Arrow (crosshair lines hidden), Eraser |
+| Lines, channels, pitchforks | Trend line, Ray, Extended line, Info line, Horizontal line and ray, Vertical line, Cross line, Parallel channel, Regression trend (±2σ), Pitchfork, Schiff and Modified Schiff pitchforks |
+| Fibonacci and Gann | Fib retracement, Trend-based fib extension, Fib channel, Fib time zone, Fib speed resistance fan, Fib circles, Gann box, Gann square, Gann fan |
+| Patterns, Elliott waves, cycles | XABCD and ABCD (with their ratios), Triangle pattern, Head and shoulders, Elliott impulse (1-5), correction (A-B-C), triangle (A-E), double (W-X-Y) and triple (W-X-Y-X-Z) combos, Cyclic lines, Time cycles, Sine line |
+| Forecasting, volume, measures | Long and Short position (reward, risk, R/R), Forecast, Anchored VWAP, Fixed range volume profile (POC, 70% value area), Price range, Date range, Date and price range |
+| Brushes, arrows, shapes | Brush, Highlighter, Arrow, Arrow marks up and down, Rectangle, Circle, Ellipse, Triangle, Path, Curve |
+| Then | Magnet (snap to the bar's open, high, low or close), **Lock all**, **Hide all**, Remove (the selected drawing, or all of the symbol's with a second click) |
+
+**Placing.** Open a group, pick a tool, then click each point. For two-point
+tools you can also press, drag and release. A Path finishes on a double-click
+or Enter. Afterwards the pointer goes back to the cursor you last used.
+Points snap to bars, and with **Magnet** on, price snaps to the nearest open,
+high, low or close of that bar. You can draw past the last bar: future dates
+follow the Moon/Sun layer's rule (weekdays for daily bars, weeks, months).
+
+**Editing.** With a cursor tool, click a drawing to select it: its points get
+handles. Drag a handle to move that point, drag the drawing to move all of
+it, press Delete to remove it, or use the Eraser. Escape cancels a drawing in
+progress or clears the selection. **Lock all** stops drawings being selected,
+moved or erased; new ones can still be drawn. **Hide all** hides them; picking
+a drawing tool shows them again. The bin removes the selected drawing, or,
+with none selected, every drawing of the symbol once clicked twice.
+
+**Cursors.** Cross is the usual crosshair; Dot shows a dot for the pointer;
+Arrow is the plain pointer with the crosshair lines hidden (the legend and
+readout still follow it).
+
+**Definitions that differ between platforms**, as gexdash draws them (each
+tool's tooltip says the same):
+
+- *Fib retracement* runs from the swing's start, level 1, to its end, level 0:
+  0.618 is a 61.8% pullback from where the move ended.
+- *Trend-based fib extension* projects the move from point 1 to point 2 from
+  point 3.
+- *Schiff pitchfork* starts its median halfway between points 1 and 2 in
+  price, at point 1's time; *Modified Schiff* halfway in both time and price.
+- *Gann fan*: point 2 sets the 1x1; "1x2" is one unit of price per two of time.
+- *Regression trend*: least squares of the closes between the points, with
+  ±2 standard deviations of the residuals.
+- *Fixed range volume profile*: 24 rows, each bar's volume spread over the
+  prices it traded through, the fullest row as the POC and the 70% around it
+  as the value area.
+- *Fib circles* and *Circle* are round on screen, so they change shape against
+  the prices when you zoom.
+
+## 8. Time zone
 
 Click the zone tag beside the clock (it reads **ET** by default). Every time
 on screen follows your choice: the clock, intraday axis times, crosshair tags,
@@ -300,7 +359,7 @@ and daily bars keep their dates in every zone. A session divider names its
 trading day, so in Tokyo a bar from Monday's US session reads Tuesday morning
 under a "Mon" divider. That is correct.
 
-## 8. Light and dark
+## 9. Light and dark
 
 **◐** in the header switches theme; `?theme=dark` links it. Both palettes
 were checked for colour-vision deficiency, and calls and puts are blue and
@@ -308,7 +367,7 @@ orange, never green and red.
 
 ![Dark theme](images/chart-dark.png)
 
-## 9. Links you can share
+## 10. Links you can share
 
 Every screen can be linked. A link's parameters apply to that page; only
 `view` is also remembered as your choice.
@@ -316,10 +375,10 @@ Every screen can be linked. A link's parameters apply to that page; only
 | Parameter | Values | Example |
 |---|---|---|
 | `view` | `terminal` `columns` `chart` | `?view=columns` |
-| `symbol` | an instrument for Terminal and Columns | `?symbol=QQQ` |
+| `symbol` | any symbol for Terminal and Columns | `?symbol=QQQ`, `?symbol=AAPL` |
 | `theme` | `light` `dark` | `?theme=dark` |
 | `tz` | `exchange`, `local`, or any IANA zone | `?tz=Europe/London` |
-| `chart` | QQQ, SPY, USO, ES, NQ | `?view=chart&chart=USO` |
+| `chart` | any symbol for the Chart view | `?view=chart&chart=USO`, `&chart=/CL` |
 | `chart_range`, `chart_interval` | as in the table above | `&chart_range=2Y&chart_interval=1W` |
 | `chart_session` | `rth` (regular hours) or `eth` (extended), ETFs only | `&chart_session=eth` |
 | `chart_adjust` | `on` or `off`, ES and NQ only | `&chart_adjust=off` |
@@ -328,7 +387,7 @@ Every screen can be linked. A link's parameters apply to that page; only
 The HTTP API behind the dashboard is documented in [api.md](api.md), and
 interactive OpenAPI docs are served at `/api/docs` while it runs.
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | What you see | What it means |
 |---|---|

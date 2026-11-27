@@ -57,6 +57,10 @@ const state = {
   stream: null,
   showTable: false,
   view: "terminal",
+  // The Terminal and Columns symbol, as the server resolved it ("/es" -> "ES"),
+  // and what /api/symbol said about it.
+  symbol: "SPX",
+  symbolInfo: null,
   expTab: "gex",
   range: "1D",
   interval: "1m",
@@ -206,7 +210,7 @@ const legendFor = (spec) =>
  *  SPX until /api/meta has filled the symbol picker. */
 function params() {
   return new URLSearchParams({
-    symbol: $("f-symbol").value || "SPX",
+    symbol: state.symbol || "SPX",
     expiry_window: $("f-window").value,
     dealer_sign: $("f-sign").value,
     flip_method: $("f-flip").value,
@@ -221,17 +225,90 @@ function params() {
 async function loadMeta() {
   const meta = await (await fetch("/api/meta")).json();
   state.meta = meta;
-  const sel = $("f-symbol");
-  sel.innerHTML = Object.entries(meta.families)
-    .map(([family, keys]) => {
-      const opts = keys.map((k) => {
-        const i = meta.instruments.find((x) => x.key === k);
-        return `<option value="${k}">${k} — ${esc(i.label)}</option>`;
-      }).join("");
-      return `<optgroup label="${esc(family)}">${opts}</optgroup>`;
-    }).join("");
-  const wanted = (new URLSearchParams(location.search).get("symbol") || "SPX").toUpperCase();
-  sel.value = meta.instruments.some((i) => i.key === wanted) ? wanted : "SPX";
+  // Suggestions only: any symbol can be typed.
+  $("symbol-list").innerHTML = Object.entries(meta.families)
+    .flatMap(([family, keys]) => keys.map((k) => {
+      const i = meta.instruments.find((x) => x.key === k);
+      return `<option value="${k}">${esc(i.label)} · ${esc(family)}</option>`;
+    })).join("");
+  const wanted = (new URLSearchParams(location.search).get("symbol") || "SPX").trim().toUpperCase();
+  const info = await lookupSymbol(wanted).catch(() => null);
+  state.symbol = info ? info.symbol : "SPX";
+  state.symbolInfo = info;
+  $("f-symbol").value = state.symbol;
+  if (!info) notice(`${wanted} is not a symbol gexdash can look up; showing SPX.`, true);
+}
+
+/** What the server resolves a typed symbol to (/api/symbol): the key it
+ *  will be fetched as ("/es" -> "ES"), whether it is registered, and whether
+ *  exposure can be computed for it. Throws with the server's reason for a
+ *  malformed symbol. */
+async function lookupSymbol(raw) {
+  const res = await fetch(`/api/symbol?${new URLSearchParams({ symbol: raw })}`);
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+  return body;
+}
+
+/** Switch the Terminal and Columns to a typed symbol. A malformed one is
+ *  refused with the reason and the box goes back to the symbol on screen.
+ *  One whose exposure cannot be computed (a typed future) stops the stream
+ *  and says why where the exposure would be; its candles still load. */
+async function selectSymbol(raw) {
+  const typed = String(raw || "").trim().toUpperCase();
+  if (!typed) { $("f-symbol").value = state.symbol; return; }
+  let info;
+  try {
+    info = await lookupSymbol(typed);
+  } catch (err) {
+    notice(err.message, true);
+    $("f-symbol").value = state.symbol;
+    return;
+  }
+  notice(null);
+  $("f-symbol").value = info.symbol;
+  if (info.symbol === state.symbol && state.data) return;
+  state.symbol = info.symbol;
+  state.symbolInfo = info;
+  state.bars = null;                     // bars are per-instrument
+  state.breadth = null;                  // and the exchange can change with it
+  if (!info.exposure.available) {
+    if (state.stream) stopStream();
+    renderNoExposure(info.symbol, info.exposure.reason);
+  } else if (state.stream) startStream();
+  else load();
+  if (state.view === "terminal") { loadBars(); loadBreadth(); }
+}
+
+/** The exposure panels when the symbol on screen has no exposure payload:
+ *  one refused outright (a typed future, whose multiplier is unknown) or one
+ *  whose chain did not load, such as a stock with no listed options. The
+ *  previous symbol's numbers must not stay up under the new name. Candles,
+ *  internals and the Chart view need no chain, so they carry on. */
+function renderNoExposure(symbol, reason) {
+  state.data = null;
+  const box = `<div class="nodata"><div>No exposure for ${esc(symbol)}<br><span class="small">${esc(reason || "")}</span></div></div>`;
+  ["kpi-row", "exp-h-chart", "bias-rows", "exposure-tiles", "radar", "charts", "unavailable-terminal",
+    "unavailable-bias", "unavailable-zone", "diag", "tableview"].forEach((id) => { if ($(id)) $(id).innerHTML = ""; });
+  $("kpi-row").innerHTML = box.replace('class="nodata"', 'class="nodata compact"');
+  $("exp-h-chart").innerHTML = box;
+  // Session volume is read off the chain too.
+  $("sv-fill").style.width = "0%";
+  ["sv-calls", "sv-puts"].forEach((id) => ($(id).textContent = "—"));
+  $("sv-note").textContent = "";
+  $("charts").innerHTML = box;
+  $("exposure-tiles").innerHTML = box;
+  $("gexlevels-body").innerHTML = "";
+  // The Columns view's spot, levels and ratio tiles are the chain's too.
+  ["spot", "t-maxpain", "t-resist", "t-support", "t-poc", "t-zerodte", "t-pcoi", "t-pcvol", "pc-calls", "pc-puts"]
+    .forEach((id) => ($(id).textContent = "—"));
+  ["spot-meta", "maxpain-exp", "t-resist-sub", "t-support-sub", "regime-src"].forEach((id) => ($(id).textContent = ""));
+  $("pcbar-fill").style.width = "0%";
+  $("reading").hidden = true;
+  ["strip-range", "strip-strikes", "strip-contracts", "strip-exercise", "strip-oi"].forEach((id) => ($(id).textContent = "—"));
+  $("regime-label").textContent = "—";
+  $("regime-gloss").textContent = "";
+  if (state.view === "terminal") { renderChartControls(); renderPriceChart(); }
 }
 
 /** One exposure fetch (/api/exposure) with the current filters, drawn by
@@ -246,10 +323,14 @@ async function load() {
     const res = await fetch(`/api/exposure?${params()}`);
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+    if (body.instrument !== state.symbol) return;     // the symbol changed while this was in flight
     render(body);
     notice(null);
   } catch (err) {
-    notice(err.message, true);
+    // Another symbol's surface must not stay on screen under this one's name;
+    // a failed refresh of the same symbol keeps the last good surface.
+    if (!state.data || state.data.instrument !== state.symbol) renderNoExposure(state.symbol, err.message);
+    else notice(err.message, true);
   } finally {
     host.classList.remove("stale");
   }
@@ -263,7 +344,7 @@ async function load() {
 async function loadBreadth() {
   if (!$("f-symbol").value) return;          // before /api/meta: startup asks again
   try {
-    const res = await fetch(`/api/breadth?symbol=${$("f-symbol").value}`);
+    const res = await fetch(`/api/breadth?${new URLSearchParams({ symbol: state.symbol })}`);
     state.breadth = await res.json();
   } catch (err) {
     state.breadth = { available: false, reason: err.message };
@@ -280,7 +361,7 @@ async function loadBreadth() {
 async function loadBars() {
   if (!$("f-symbol").value) return;          // before /api/meta: startup asks again
   const q = new URLSearchParams({
-    symbol: $("f-symbol").value, range: state.range, interval: state.interval, indicators: "true",
+    symbol: state.symbol, range: state.range, interval: state.interval, indicators: "true",
   });
   if (state.indicators.astro) q.set("astro", "true");
   try {
@@ -394,11 +475,14 @@ function renderStrip(d) {
   const lo = Math.min(...d.strikes), hi = Math.max(...d.strikes);
   const im = d.instrument_meta || {};
   $("strip-range").textContent = `${priceFmt(lo)} – ${priceFmt(hi)}`;
-  $("strip-strikes").textContent = `${d.strikes.length} strikes (±${im.display_strikes} ATM, ${im.strike_step} step)`;
+  $("strip-strikes").textContent = `${d.strikes.length} strikes (±${im.display_strikes} ATM${im.strike_step ? `, ${im.strike_step} step` : ""})`;
   $("strip-contracts").textContent = d.contracts;
-  $("strip-exercise").innerHTML = im.note
+  const specs = im.generic
+    ? ` · <span style="color:var(--serious)">generic specs: ×${im.multiplier}, ${esc(im.exercise_style)}, no dividend unless set</span>`
+    : "";
+  $("strip-exercise").innerHTML = (im.note
     ? `<span style="color:var(--serious)">⚠ ${esc(im.note)}</span>`
-    : `${esc(im.exercise_style || "")} · ×${im.multiplier}`;
+    : `${esc(im.exercise_style || "")} · ×${im.multiplier}`) + specs;
   $("strip-oi").innerHTML =
     `OI as of <b>${d.diagnostics.oi_asof || "unknown"}</b> — OCC publishes once daily; re-priced against live spot` +
     (d.stale ? ' · <span style="color:var(--critical)">STALE CHAIN</span>' : "");
@@ -604,8 +688,11 @@ function barWhen(stamp, daily, full) {
  */
 function renderPriceChart() {
   const host = $("price-chart");
-  const d = state.data, bars = state.bars;
-  if (!d) return;
+  // Levels only from this symbol's surface; the candles need no chain at all,
+  // so a symbol without exposure (a typed future, a stock with no options)
+  // still draws.
+  const d = state.data && state.data.instrument === state.symbol ? state.data : null;
+  const bars = state.bars;
 
   if (!bars || !bars.available) {
     host.innerHTML = `<div class="nodata">Price history unavailable${
@@ -637,7 +724,7 @@ function renderPriceChart() {
   const showVwap = $("chk-vwap").checked;
 
   // Level annotations are prices, so they share the price axis legitimately.
-  const levels = !showLevels ? [] : [
+  const levels = !showLevels || !d ? [] : [
     ["call_wall", "Call Wall", "var(--series-call)", false],
     ["put_wall", "Put Wall", "var(--series-put)", false],
     ["gamma_flip", "Gamma Flip", "var(--warning)", true],
@@ -794,8 +881,19 @@ function renderPriceChart() {
   };
   attachCrosshair(svg);
 
+  // Drawings, in time and price, on this render's slots (draw.js).
+  const served = state.bars?.plan?.interval_served;
+  drawAttach("terminal", {
+    host, svg, symbol: state.symbol, plot: { l: padL, r: padL + innerW, t: padT, b: padT + innerH },
+    x0: padL, lo, bw, yLo, yHi, stamps: bars.time,
+    kind: served === "1D" ? "daily" : served === "1W" ? "weekly" : served === "1Mo" ? "monthly" : "minute",
+    step: (bars.interval_minutes || 1) * 60,
+    bars: { open: bars.open, high: bars.high, low: bars.low, close: bars.close, volume: bars.volume },
+    fmtPrice: (p) => priceFmt(p), fmtTime: (stamp) => barWhen(stamp, daily, true),
+  });
+
   $("price-title").textContent =
-    `${d.instrument} · ${state.bars?.plan?.interval_served || state.interval} · ${state.range}`;
+    `${state.symbol} · ${state.bars?.plan?.interval_served || state.interval} · ${state.range}`;
   // The header keeps the context that does not track the cursor; the per-bar
   // numbers belong to the readout.
   $("price-ohlc").textContent =
@@ -1761,12 +1859,9 @@ function setView(view, { reload = true } = {}) {
 ["f-window", "f-sign", "f-flip"].forEach((id) =>
   $(id).addEventListener("change", () => (state.stream ? startStream() : load())));
 
-$("f-symbol").addEventListener("change", () => {
-  state.bars = null;                     // bars are per-instrument
-  state.breadth = null;                  // and the exchange can change with it
-  if (state.stream) startStream(); else load();
-  if (state.view === "terminal") { loadBars(); loadBreadth(); }
-});
+// "change" fires on Enter, on picking a suggestion, and on leaving the box.
+$("f-symbol").addEventListener("change", () => selectSymbol($("f-symbol").value));
+$("f-symbol").addEventListener("keydown", (ev) => { if (ev.key === "Escape") { $("f-symbol").value = state.symbol; $("f-symbol").blur(); } });
 
 ["view-terminal-btn", "view-columns-btn", "view-chart-btn"].forEach((id) =>
   $(id).addEventListener("click", () => setView($(id).dataset.view)));
@@ -1834,7 +1929,7 @@ $("btn-table-close").addEventListener("click", () => $("btn-table").click());
 $("btn-refresh").addEventListener("click", async () => {
   $("btn-refresh").disabled = true;
   try {
-    const res = await fetch(`/api/refresh?symbol=${$("f-symbol").value}`, { method: "POST" });
+    const res = await fetch(`/api/refresh?${new URLSearchParams({ symbol: state.symbol })}`, { method: "POST" });
     const body = await res.json();
     if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
     notice(`Chain refetched: ${body.contracts} contracts, OI as of ${body.oi_asof}.`);
@@ -1852,7 +1947,17 @@ function startStream() {
   const es = new EventSource(`/api/stream?${params()}&interval=2`);
   es.onmessage = (ev) => {
     const body = JSON.parse(ev.data);
-    if (body.error) return notice(body.error, true);
+    if (body.error) {
+      // As in load(): a symbol whose chain never loaded must not keep the
+      // previous symbol's surface under its name. There is nothing to
+      // stream, so stop asking every two seconds.
+      if (!state.data || state.data.instrument !== state.symbol) {
+        stopStream();
+        renderNoExposure(state.symbol, body.error);
+      }
+      return notice(body.error, true);
+    }
+    if (body.instrument !== state.symbol) return;   // a frame from before a symbol change
     render(body);   // dispatches to whichever view is mounted
   };
   es.onerror = () => notice("stream disconnected", true);
@@ -1880,7 +1985,12 @@ function stopStream() {
   $("badge-live").className = "badge";
 }
 
-$("btn-live").addEventListener("click", () => (state.stream ? stopStream() : startStream()));
+$("btn-live").addEventListener("click", () => {
+  if (state.stream) return stopStream();
+  // Streaming re-prices a chain; a symbol with no exposure has none.
+  if (state.symbolInfo && !state.symbolInfo.exposure.available) return notice(state.symbolInfo.exposure.reason, true);
+  startStream();
+});
 
 $("btn-theme").addEventListener("click", () => {
   const root = document.documentElement;
@@ -1930,5 +2040,7 @@ window.addEventListener("resize", () => {
 });
 
 initTechnicals();
+drawInit("terminal", $("price-chart"));
+drawToolbar($("draw-bar-terminal"), $("price-chart"), $("draw-frame-terminal"));
 setView(urlParams.get("view") || storeGet("gexdash-view") || "terminal", { reload: false });
 loadMeta().then(() => Promise.all([load(), loadBars(), loadBreadth()])).catch((e) => notice(e.message, true));

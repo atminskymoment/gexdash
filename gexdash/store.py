@@ -24,7 +24,9 @@ from pathlib import Path
 import numpy as np
 
 from .chain import OptionChain, build_chain
-from .instruments import Instrument, get as get_instrument
+# resolve, not get: a typed symbol's chain is cached like any other, and must
+# rebuild from its key into the same generic spec it was fetched with.
+from .instruments import Instrument, resolve as get_instrument
 
 def default_db_path() -> Path:
     """Resolved per call, so GEXDASH_HOME is honoured after import."""
